@@ -1,0 +1,38 @@
+实时看板（LiveBoard）
+原作：Luna Fantasy Lab — https://github.com/LunaFantasyLab/live-board
+
+Copyright (c) 2026 Luna Fantasy Lab. All rights reserved except as granted under CC BY-NC 4.0.
+
+【免费版授权】
+本项目（第三方组件除外，见下文）按 Creative Commons 署名-非商业性使用 4.0 国际许可协议（CC BY-NC 4.0）提供，全文见 LICENSE：
+  https://creativecommons.org/licenses/by-nc/4.0/
+- 可以免费使用、复制、修改、分发；
+- 必须署名「Luna Fantasy Lab」并附上仓库链接 https://github.com/LunaFantasyLab/live-board，注明是否做过修改；
+- 禁止商业用途。
+
+【商业授权】
+任何商业使用，须事先获得 Luna Fantasy Lab 的书面商业授权。
+联系方式：通过 GitHub 联系 @LunaFantasyLab（仓库 Issues 或主页 https://github.com/LunaFantasyLab）。
+
+【第三方组件】（各自沿用原许可，不受上面的 CC BY-NC 4.0 约束）
+- three.js — MIT License — https://github.com/mrdoob/three.js
+  （含 GLTFLoader、meshopt 解码器等 examples/jsm 模块，打包进看板网页；许可全文见 third_party/licenses/three.js-MIT.txt）
+- Anton 字体（@fontsource/anton）— SIL Open Font License 1.1 — Copyright 2020 The Anton Project Authors
+  https://github.com/googlefonts/AntonFont （字体文件打包进看板网页；OFL 全文见 third_party/licenses/Anton-OFL-1.1.txt）
+- Vite（只在构建时使用，不随 App 分发）— MIT License
+
+---
+
+LiveBoard
+Original work: Luna Fantasy Lab — https://github.com/LunaFantasyLab/live-board
+
+Copyright (c) 2026 Luna Fantasy Lab. All rights reserved except as granted under CC BY-NC 4.0.
+
+Free edition: licensed under Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0), see LICENSE
+and https://creativecommons.org/licenses/by-nc/4.0/ . You must credit "Luna Fantasy Lab" with a link to
+https://github.com/LunaFantasyLab/live-board and indicate if changes were made. No commercial use.
+
+Commercial license: any commercial use requires prior written commercial permission from Luna Fantasy Lab.
+Contact: reach @LunaFantasyLab on GitHub (repository Issues or profile page https://github.com/LunaFantasyLab).
+
+Third-party components keep their own licenses: three.js (MIT), Anton font (SIL OFL 1.1), Vite (MIT, build-time only).

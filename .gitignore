@@ -1,0 +1,30 @@
+# 构建产物
+dist/
+board/dist/
+board/node_modules/
+node_modules/
+*.dmg
+
+# 测试输出
+tests/out/
+__pycache__/
+*.pyc
+
+# 本机数据和密钥（写入端默认在 ~/.liveboard，这里防止有人放进仓库）
+.liveboard/
+notion_token
+*.token
+.env
+.env.*
+config.json
+!examples/*.json
+roster.json
+events.jsonl
+state/
+
+# 编辑器 / 系统
+.DS_Store
+*.orig
+*.swp
+.vscode/
+.idea/

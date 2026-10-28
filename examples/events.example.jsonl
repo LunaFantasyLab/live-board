@@ -1,0 +1,5 @@
+{"v":1,"id":"01EXAMPLE0000000000000001A","ts":"2026-01-31T09:00:00+00:00","bot":"调度","type":"交接","project":"示例任务","task_id":null,"to":"研究员","gate":null,"message":"新任务：找三个选题","files":[],"source":"cli"}
+{"v":1,"id":"01EXAMPLE0000000000000002B","ts":"2026-01-31T09:05:00+00:00","bot":"研究员","type":"接单","project":"示例任务","task_id":null,"to":null,"gate":null,"message":"收到，开始找资料","files":[],"source":"cli"}
+{"v":1,"id":"01EXAMPLE0000000000000003C","ts":"2026-01-31T09:40:00+00:00","bot":"研究员","type":"产出","project":"示例任务","task_id":null,"to":null,"gate":null,"message":"选题清单初稿","files":["选题清单.md"],"source":"cli"}
+{"v":1,"id":"01EXAMPLE0000000000000004D","ts":"2026-01-31T09:45:00+00:00","bot":"研究员","type":"交接","project":"示例任务","task_id":null,"to":"写手","gate":null,"message":"选题定了，交给写手","files":[],"source":"cli"}
+{"v":1,"id":"01EXAMPLE0000000000000005E","ts":"2026-01-31T10:30:00+00:00","bot":"写手","type":"待确认","project":"示例任务","task_id":null,"to":null,"gate":null,"message":"开头两版，请选一版","files":[],"source":"cli"}

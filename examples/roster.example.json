@@ -1,0 +1,14 @@
+{
+  "title": "示例团队",
+  "stages": ["选题", "写稿", "配图", "剪辑", "审核", "发布"],
+  "bots": [
+    { "name": "调度", "short": "调度", "seal": "调" },
+    { "name": "研究员", "short": "研究", "seal": "研", "stage": 0 },
+    { "name": "写手", "short": "写手", "seal": "写", "stage": 1 },
+    { "name": "画师", "short": "画师", "seal": "画", "stage": 2 },
+    { "name": "剪辑师", "short": "剪辑", "seal": "剪", "stage": 3 },
+    { "name": "审核员", "short": "审核", "seal": "审", "stage": 4 },
+    { "name": "发布员", "short": "发布", "seal": "发", "stage": 5 },
+    { "name": "数据员", "short": "数据", "seal": "数" }
+  ]
+}

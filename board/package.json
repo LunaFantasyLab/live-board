@@ -1,0 +1,20 @@
+{
+  "name": "liveboard-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "实时看板的网页部分（Three.js 工位场景 + 状态面板）",
+  "license": "CC-BY-NC-4.0",
+  "author": "Luna Fantasy Lab",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@fontsource/anton": "^5.3.0",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "vite": "^8.3.5"
+  }
+}

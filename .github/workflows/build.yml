@@ -1,0 +1,31 @@
+# 手动触发或打 v* 标签时：跑测试，打包 .dmg 作为构建产物（只上传到这次运行的 Artifacts，不自动发布 Release）
+name: build
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python3 tests/test_writer.py -v
+  app:
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: 原生层放行规则测试
+        run: swiftc app/LiveBoard/Policy.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests
+      - name: 打包
+        run: |
+          V="${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0' }}"
+          VERSION="${V#v}" bash scripts/build-app.sh --dmg
+      - uses: actions/upload-artifact@v4
+        with: { name: LiveBoard-dmg, path: dist/*.dmg }
