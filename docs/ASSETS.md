@@ -14,6 +14,7 @@
 | 数字字体 Anton | npm `@fontsource/anton`，构建后进 `dist` | Google Fonts / The Anton Project Authors | SIL OFL 1.1，见 `third_party/licenses/Anton-OFL-1.1.txt` |
 | 中文与备用字体（PingFang SC、Noto Sans CJK SC 等） | CSS 字体名 | 只引用用户电脑上已有的系统字体，不随仓库分发 | — |
 | 3D 引擎 three.js | npm `three` | three.js authors | MIT，见 `third_party/licenses/three.js-MIT.txt` |
+| README 截图和动图 | `docs/images/` | 用本仓库的看板网页、`tests/` 里的假 Notion 和示例名单在浏览器里录制，没有真实数据 | 本项目（CC BY-NC 4.0） |
 
 重新生成模型 / Regenerate the model:
 

@@ -4,6 +4,16 @@
 
 数据放在你自己的 Notion 里：成员打卡写到一张 Notion 表，Mac 上的看板从这张表读。不需要服务器，不需要内网穿透，也不需要开端口。
 
+<p align="center"><img src="docs/images/board.gif" width="960" alt="实时看板：机器人在工位上干活，交接时任务卡飞到下一位手里，背景红条纹慢慢呼吸"></p>
+
+<p align="center"><sub>看板实际画面（示例名单）。<a href="docs/images/board.mp4">高清 MP4</a></sub></p>
+
+| 有人在工作 | 全员空闲 | 点开「更多 → 成员」 |
+|---|---|---|
+| <img src="docs/images/working.png" alt="有人在工作时的看板"> | <img src="docs/images/idle.png" alt="全员空闲时的看板"> | <img src="docs/images/detail.png" alt="成员详情面板"> |
+
+红黑漫画风的小办公室：谁在干活就坐在工位上忙，交接时任务卡会飞到下一位手里；没人动的时候背景红条纹慢慢呼吸；右侧是人数、任务进度，点「更多」能看每个成员在做什么。
+
 > English summary is at the [bottom](#english).
 
 ## 它是怎么工作的
@@ -21,7 +31,7 @@
 
 ### 方式一：下载安装包（推荐）
 
-1. 下载 `LiveBoard-<版本>.dmg`，双击打开，把「实时看板」拖进「应用程序」。
+1. 到 [Releases 页面](https://github.com/LunaFantasyLab/live-board/releases/latest) 下载 `LiveBoard-<版本>.dmg`，双击打开，把「实时看板」拖进「应用程序」。
 2. 第一次打开：这个 App 没有经过 Apple 公证，macOS 会拦一下。打开「系统设置 → 隐私与安全性」，在最下面点「仍要打开」。（只需要一次。）
 3. 打开后会自动弹出设置窗口，按提示做三步（见下面「第一次设置」）。
 
@@ -115,14 +125,17 @@ Copyright (c) 2026 Luna Fantasy Lab. All rights reserved except as granted under
 
 ## English
 
+![LiveBoard in action](docs/images/board.gif)
+
 **LiveBoard** is a macOS menu-bar app that shows what each member of a team (people or automated agents) is doing right now: who is working, who is idle, who is waiting for your confirmation, and which step a task is at.
 
 Data lives in **your own Notion workspace**: a small Python CLI (`writer/liveboard.py`, stdlib only) records check-in events locally and syncs them to a Notion database; the Mac app polls that database. No server, no tunnels, no open ports.
 
-- **Install**: download the `.dmg` and drag the app to Applications (the app is not notarized: approve it once in *System Settings → Privacy & Security → Open Anyway*), or build from source with `安装.command` (needs Xcode Command Line Tools and Node.js 18+).
+- **Install**: download the `.dmg` from [Releases](https://github.com/LunaFantasyLab/live-board/releases/latest) and drag the app to Applications (the app is not notarized: approve it once in *System Settings → Privacy & Security → Open Anyway*), or build from source with `安装.command` (needs Xcode Command Line Tools and Node.js 18+).
 - **First launch**: a three-step setup window asks for a Notion internal integration token (verified on the spot), lets you pick a shared page, and creates the relay page and the `看板数据` database for you.
 - **Writer**: `python3 writer/liveboard.py init --database <id>`, then `liveboard.py sync` (keep it running) and `liveboard.py ev <type> --bot <name> --msg "..."` to check in.
 - **Security**: the token is stored with mode 600 and never exposed to the web view; the native layer only allows a fixed set of Notion API calls.
+- Screenshots: [working](docs/images/working.png) · [all idle](docs/images/idle.png) · [member details](docs/images/detail.png) · [HD video (MP4)](docs/images/board.mp4).
 - Protocol and data formats: [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ### License
