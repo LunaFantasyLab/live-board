@@ -9,7 +9,11 @@
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>CFBundleVersion</key><string>__BUILD__</string>
-  <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string></array>
+  <!-- 访达按系统语言显示 Resources/<语言>.lproj/InfoPlist.strings 里的名字（英文系统显示 Live Board）；
+       前提是 .app 的文件名和这里的 CFBundleDisplayName 一样（实时看板.app） -->
+  <key>LSHasLocalizedDisplayName</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>

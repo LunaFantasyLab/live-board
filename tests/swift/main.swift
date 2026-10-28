@@ -1,5 +1,5 @@
 // 原生层放行规则的测试。Linux / Mac 都能跑：
-//   swiftc app/LiveBoard/Policy.swift app/LiveBoard/Store.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests
+//   swiftc app/LiveBoard/Policy.swift app/LiveBoard/Store.swift app/LiveBoard/Lang.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests
 import Foundation
 
 var fails = 0, total = 0
@@ -114,6 +114,43 @@ dir = freshDir()
 let e3 = Store.commitSetup(pending: tok("d"), databaseID: dbDash)
 check("完成设置：密钥和表 ID 都存好", e3 == nil && Store.token() == tok("d") && Store.databaseID == db)
 check("完成设置：没有密钥时报错", { _ = freshDir(); return Store.commitSetup(pending: nil, databaseID: db) != nil && !fm.fileExists(atPath: Store.configFile.path) }())
+
+
+// ---- 界面语言（L10n：跟随系统 / 简体中文 / English） ----
+L10n.resourceDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("app/LiveBoard/Resources")   // 在仓库根目录运行
+let suite = "lb-test-\(UUID().uuidString)"
+L10n.defaults = UserDefaults(suiteName: suite)!
+check("语言：没设过就是跟随系统", L10n.preference == "system")
+check("语言：系统英文 → English", L10n.resolve("system", system: ["en-US"]) == "en")
+check("语言：系统简体中文 → 简体中文", L10n.resolve("system", system: ["zh-Hans-CN", "en-US"]) == "zh-Hans")
+check("语言：系统繁体中文 → 简体中文（只有这两套）", L10n.resolve("system", system: ["zh-Hant-TW"]) == "zh-Hans")
+check("语言：系统日文、第二语言英文 → English", L10n.resolve("system", system: ["ja-JP", "en-US"]) == "en")
+check("语言：系统日文、第二语言中文 → 简体中文", L10n.resolve("system", system: ["ja-JP", "zh-Hans"]) == "zh-Hans")
+check("语言：系统是别的语言 → English", L10n.resolve("system", system: ["fr-FR"]) == "en" && L10n.resolve("system", system: []) == "en")
+check("语言：手动选 English 优先于系统中文", L10n.resolve("en", system: ["zh-Hans-CN"]) == "en")
+check("语言：手动选简体中文优先于系统英文", L10n.resolve("zh-Hans", system: ["en-US"]) == "zh-Hans")
+check("语言：不认识的设置当跟随系统", L10n.resolve("fr", system: ["zh-Hans"]) == "zh-Hans")
+L10n.systemLanguages = { ["en-GB"] }
+check("语言：跟随系统时按系统语言显示", L10n.current == "en" && L10n.web == "en")
+L10n.preference = "zh-Hans"
+check("语言：选简体中文后马上生效、存下来", L10n.current == "zh-Hans" && L10n.web == "zh" && L10n.defaults.string(forKey: L10n.prefKey) == "zh-Hans")
+L10n.preference = "bogus"
+check("语言：存不认识的值会退回跟随系统", L10n.preference == "system")
+let zhT = L10n.table("zh-Hans"), enT = L10n.table("en")
+check("语言：两套文字都读得到（\(zhT.count) / \(enT.count) 条）", zhT.count >= 20 && enT.count == zhT.count)
+check("语言：两套文字的条目一一对应", Set(zhT.keys) == Set(enT.keys))
+L10n.preference = "en"
+check("语言：English 菜单文字", L("menu.refresh") == "Refresh" && L("menu.quit") == "Quit Live Board")
+L10n.preference = "zh-Hans"
+check("语言：简体中文菜单文字（切换不用重启）", L("menu.refresh") == "刷新")
+check("语言：缺条目时退回中文、再退回 key", L10n.t("no.such.key") == "no.such.key")
+L10n.preference = "en"
+check("语言：带参数的文字", L("about.credits", "0.2.0").hasPrefix("Version 0.2.0"))
+dir = freshDir()
+check("语言：完成设置的错误提示跟着语言（English）", Store.commitSetup(pending: nil, databaseID: "bad") == "Invalid table ID")
+L10n.preference = "zh-Hans"
+check("语言：完成设置的错误提示跟着语言（中文）", Store.commitSetup(pending: nil, databaseID: "bad") == "表 ID 不对")
+UserDefaults.standard.removePersistentDomain(forName: suite)
 
 print("\(total - fails)/\(total) passed")
 exit(fails == 0 ? 0 : 1)

@@ -1,0 +1,3 @@
+/* 访达、程序坞、登录项里显示的 App 名（跟系统语言） / App name shown by Finder and Login Items (follows the system language) */
+"CFBundleDisplayName" = "Live Board";
+"CFBundleName" = "Live Board";

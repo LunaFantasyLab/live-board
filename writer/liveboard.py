@@ -23,6 +23,29 @@ Mac 菜单栏 App 从那张表读。Mac 上换人会在表里加一行「换人�
   config.json（表 ID）  notion_token（连接密钥，600 权限）  roster.json（名单）  events.jsonl（事件）  state/（同步记账）
 连接密钥也可以放在环境变量 LIVEBOARD_NOTION_TOKEN 里。
 """
+DOC_EN = """Live Board writer: logs check-ins to a local events.jsonl (append-only); the sync process pushes events,
+the roster and the desks to the "Board data" table in your Notion, and the Mac menu bar app reads that table.
+
+Usage
+  liveboard.py init [--database <table link or ID>]   first run: save the integration token (pasted, hidden) and table ID, then verify
+  liveboard.py setup-notion --parent <page link/ID>   create the relay page and board table without the app
+  liveboard.py check                                  check the token, table and roster
+  liveboard.py ev <type> --bot <member> --msg "one sentence" [--project <task>] [--to <member>] [--task <ID>]
+                 [--gate <tag>] [--file <file>]... [--test] [--source checkin|backfill] [--ts <time>]
+  liveboard.py log [count]                            show recent events (10 by default)
+  liveboard.py roster                                 list members and event types
+  liveboard.py sync [--once]                          sync to Notion (keeps running; --once exits when done)
+  liveboard.py serve [--port 4380]                    local preview server (for board/'s npm run dev, no Notion)
+  --lang zh|en                                        message language (default: LIVEBOARD_LANG, then LC_ALL / LANG)
+
+Event types: claim start output handoff return confirm done error
+handoff and return need --to. --file stores only the file name, not the full path. --ts is only for backfills;
+without a time zone it uses this machine's.
+
+Files live in $LIVEBOARD_HOME (default ~/.liveboard/):
+  config.json (table ID)  notion_token (integration token, mode 600)  roster.json  events.jsonl  state/ (sync bookkeeping)
+The token can also come from the LIVEBOARD_NOTION_TOKEN environment variable.
+"""
 import argparse, fcntl, getpass, hashlib, json, os, re, secrets, shutil, sys, threading, time
 import urllib.error, urllib.request
 from datetime import datetime, timedelta
@@ -42,6 +65,7 @@ STATUS = os.path.join(STATE, "status.json")
 LOCK = os.path.join(STATE, "sync.lock")
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXAMPLE_ROSTER = os.path.join(HERE, "..", "examples", "roster.example.json")
+EXAMPLE_ROSTER_EN = os.path.join(HERE, "..", "examples", "roster.example.en.json")
 
 SLOT_N = 6
 MIN_GAP = float(os.environ.get("LIVEBOARD_MIN_GAP", "0.45"))   # 两次请求至少隔 0.45 秒（≤2.2 次/秒，低于 Notion 约 3 次/秒）
@@ -51,7 +75,7 @@ BY_TXT = {"default": "默认（按最近动态，第一次存下后固定）", "
 TYPES = ["接单", "开始", "产出", "交接", "退回", "待确认", "完成", "报错"]
 TYPE_ALIAS = {"claim": "接单", "start": "开始", "output": "产出", "handoff": "交接", "return": "退回",
               "confirm": "待确认", "done": "完成", "error": "报错"}
-SOURCES = {"打卡": "cli", "补记": "backfill", "cli": "cli", "backfill": "backfill"}
+SOURCES = {"打卡": "cli", "补记": "backfill", "cli": "cli", "backfill": "backfill", "checkin": "cli", "check-in": "cli"}
 # 只拦「真像密钥」的内容：常见密钥前缀、私钥头、「password=…」这类赋值写法、长随机串。
 # 「密码」「密钥」「token」这些普通词本身不拦。
 SECRET = re.compile(r"(ntn_[A-Za-z0-9]{10,}|secret_[A-Za-z0-9]{10,}|sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{8,}"
@@ -79,9 +103,74 @@ SCHEMA = {
 NEED = {"名称": "title", "类型": "select", "序号": "number", "数据": "rich_text", "状态": "select"}
 
 
+# ---------- 提示语言 ----------
+# 只翻译给人看的提示；写进事件和 Notion 表的值（类型、来源、列名）是协议，不翻译。
+def env_lang(environ=os.environ):
+    """--lang 之外的默认语言：LIVEBOARD_LANG，其次 LC_ALL / LC_MESSAGES / LANG。没设或 C / POSIX 时用中文。"""
+    v = (environ.get("LIVEBOARD_LANG") or "").strip().lower()
+    if v in ("zh", "en"):
+        return v
+    for k in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        v = (environ.get(k) or "").strip()
+        if v:
+            base = v.split(".")[0].lower()
+            if base in ("c", "posix") or base.startswith("zh"):
+                return "zh"
+            return "en"
+    return "zh"
+
+
+def take_lang(argv):
+    """从参数里取出 --lang zh|en / --lang=xx（放在哪里都行），返回 (语言或 None, 剩下的参数)。"""
+    out, lang, i = [], None, 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--lang" or a.startswith("--lang="):
+            if a == "--lang":
+                if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
+                    print("liveboard: --lang needs a value: zh or en / --lang 后面要写 zh 或 en", file=sys.stderr)
+                    sys.exit(2)
+                v = argv[i + 1]
+                i += 1
+            else:
+                v = a.split("=", 1)[1]
+            v = v.strip().lower()
+            if v.startswith("zh"): v = "zh"
+            elif v.startswith("en"): v = "en"
+            else:
+                print(f"liveboard: --lang must be zh or en (got: {v or '(empty)'}) / --lang 只能是 zh 或 en", file=sys.stderr)
+                sys.exit(2)
+            lang = v
+        else:
+            out.append(a)
+        i += 1
+    return lang, out
+
+
+LANG = env_lang()
+TYPE_EN = {v: k for k, v in TYPE_ALIAS.items()}
+
+
+def t(zh, en):
+    return en if LANG == "en" else zh
+
+
+def ty(x):
+    """事件类型的显示名（数据里存的是中文协议值）"""
+    return TYPE_EN.get(x, x) if LANG == "en" else x
+
+
+def types_txt():
+    return " ".join(ty(x) for x in TYPES)
+
+
+def sep():
+    return ", " if LANG == "en" else "、"
+
+
 # ---------- 小工具 ----------
 def die(msg, code=2):
-    print(f"liveboard：{msg}", file=sys.stderr)
+    print(f"liveboard{t('：', ': ')}{msg}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -148,7 +237,8 @@ def load_roster(strict=True):
     r = read_json(ROSTER)
     if not isinstance(r, dict) or not isinstance(r.get("bots"), list):
         if strict:
-            die(f"名单读不了：{ROSTER}。先运行 init，或照 examples/roster.example.json 写一份")
+            die(t(f"名单读不了：{ROSTER}。先运行 init，或照 examples/roster.example.json 写一份",
+                  f"Can't read the roster: {ROSTER}. Run init first, or write one based on examples/roster.example.en.json"))
         return {"bots": []}
     return r
 
@@ -158,21 +248,22 @@ def roster_problems(r):
     out = []
     bots = r.get("bots")
     if not isinstance(bots, list) or not bots:
-        return ["bots 要是一个非空列表"]
+        return [t("bots 要是一个非空列表", "bots must be a non-empty list")]
     names = [b.get("name") for b in bots if isinstance(b, dict)]
     if len(names) != len(bots) or not all(isinstance(n, str) and n.strip() for n in names):
-        out.append("每个成员都要有 name（字符串）")
+        out.append(t("每个成员都要有 name（字符串）", "every member needs a name (string)"))
     if len(set(names)) != len(names):
-        out.append("name 有重复")
+        out.append(t("name 有重复", "duplicate names"))
     if len(bots) < SLOT_N:
-        out.append(f"成员少于 {SLOT_N} 个：工位会空着（能用，只是提醒）")
+        out.append(t(f"成员少于 {SLOT_N} 个：工位会空着（能用，只是提醒）", f"fewer than {SLOT_N} members: some desks will stay empty (works, just a heads-up)"))
     stages = r.get("stages", [])
     if not isinstance(stages, list) or not all(isinstance(s, str) for s in stages):
-        out.append("stages 要是字符串列表")
+        out.append(t("stages 要是字符串列表", "stages must be a list of strings"))
         stages = []
     for b in bots:
         if isinstance(b, dict) and "stage" in b and not (isinstance(b["stage"], int) and 0 <= b["stage"] < len(stages)):
-            out.append(f"{b.get('name')}：stage 要是 stages 的下标（0 到 {len(stages) - 1}）")
+            out.append(t(f"{b.get('name')}：stage 要是 stages 的下标（0 到 {len(stages) - 1}）",
+                         f"{b.get('name')}: stage must be an index into stages (0 to {len(stages) - 1})"))
     return out
 
 
@@ -183,7 +274,13 @@ class NotionError(Exception):
         self.code, self.body = code, body
 
 
-WHY = {401: "连接密钥不对（401）", 403: "这个连接没有权限（403）", 404: "看板表还没加上这个连接，或 ID 不对（404）"}
+WHY_ZH = {401: "连接密钥不对（401）", 403: "这个连接没有权限（403）", 404: "看板表还没加上这个连接，或 ID 不对（404）"}
+WHY_EN = {401: "the integration token is wrong (401)", 403: "this integration has no access (403)",
+          404: "the board table hasn't been connected to this integration, or the ID is wrong (404)"}
+
+
+def why(code):
+    return (WHY_EN if LANG == "en" else WHY_ZH).get(code) or t(f"Notion 出错 {code}", f"Notion error {code}")
 
 
 class Notion:
@@ -214,7 +311,7 @@ class Notion:
             except (urllib.error.URLError, TimeoutError, ConnectionError):
                 time.sleep(min(30, 1.5 * 2 ** attempt))
                 continue
-        raise NotionError(0, "连不上 Notion")
+        raise NotionError(0, t("连不上 Notion", "can't reach Notion"))
 
     def query(self, db, body):
         out, cursor = [], None
@@ -272,6 +369,10 @@ def save_slots(a, reason, if_empty):
     return rec
 
 
+def reason_en(reason, if_empty):
+    return {"default": "default", "local": "kept this device's choice", "manual": "manual"}.get(reason) or ("default" if if_empty else "manual")
+
+
 def status(**kw):
     kw["at"] = now_local().isoformat(timespec="seconds")
     try:
@@ -322,7 +423,7 @@ class Sync:
                     self.n.call("PATCH", f"/v1/pages/{st[key + '_page']}", {"archived": True})
                 st[key + "_page"], st[key + "_seq"] = r["id"], seq
                 st[key + "_hash"] = hashlib.sha256(plain(p.get("数据")).encode()).hexdigest()
-        log(f"从 Notion 读回已有 {len(st['ids'])} 条事件，序号到 {st['seq']}")
+        log(t(f"从 Notion 读回已有 {len(st['ids'])} 条事件，序号到 {st['seq']}", f"Read back {len(st['ids'])} existing events from Notion, seq up to {st['seq']}"))
         self.save(st)
         return st
 
@@ -426,12 +527,12 @@ class Sync:
                         verdict = "已处理"   # 默认阵容只存第一次
                     else:
                         rec = save_slots(a, o.get("reason"), o.get("ifEmpty"))
-                        log(f"换人已存（{rec['by']}）：{'、'.join(a)}")
+                        log(t(f"换人已存（{rec['by']}）：{'、'.join(a)}", f"Desk swap saved ({reason_en(o.get('reason'), o.get('ifEmpty'))}): {', '.join(a)}"))
                         verdict = "已处理"
                 else:
-                    log("换人请求被拒：名字不在名单里、有重复或数量不对")
+                    log(t("换人请求被拒：名字不在名单里、有重复或数量不对", "Desk swap rejected: a name isn't in the roster, is repeated, or the count is wrong"))
             except Exception as e:
-                log(f"换人请求读不懂：{type(e).__name__}")
+                log(t(f"换人请求读不懂：{type(e).__name__}", f"Can't read desk swap request: {type(e).__name__}"))
             self.n.call("PATCH", f"/v1/pages/{r['id']}", {"properties": {"状态": {"select": {"name": verdict}}}, "archived": True})
             done += 1
         return done
@@ -450,17 +551,17 @@ def cmd_sync(args):
     try:
         fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print("已经有一个同步在跑", flush=True)
+        print(t("已经有一个同步在跑", "A sync is already running"), flush=True)
         return 0
     told = None
     while True:
         token, db = read_token(), database_id()
         if not token or not db:
-            why = "缺少 Notion 连接密钥" if not token else "缺少表 ID（config.json）"
-            if told != why:
-                log(f"等待：{why}。先运行 liveboard.py init")
-                told = why
-            status(ok=False, why=why)
+            w = t("缺少 Notion 连接密钥", "missing Notion integration token") if not token else t("缺少表 ID（config.json）", "missing table ID (config.json)")
+            if told != w:
+                log(t(f"等待：{w}。先运行 liveboard.py init", f"Waiting: {w}. Run liveboard.py init first"))
+                told = w
+            status(ok=False, why=w)
             if args.once:
                 return 2
             time.sleep(30)
@@ -468,7 +569,7 @@ def cmd_sync(args):
         try:
             n = Notion(token)
             s = Sync(n, db)
-            log("已连上 Notion，开始同步")
+            log(t("已连上 Notion，开始同步", "Connected to Notion, syncing"))
             told, last_ok = None, 0
             while True:
                 changed = s.step()
@@ -480,22 +581,23 @@ def cmd_sync(args):
                     while s.step():
                         s.last_swap = 0
                     status(ok=True, events=len(s.st["ids"]), seq=s.st["seq"], requests=n.count)
-                    log(f"同步完成：共 {len(s.st['ids'])} 条事件，序号 {s.st['seq']}，请求 {n.count} 次")
+                    log(t(f"同步完成：共 {len(s.st['ids'])} 条事件，序号 {s.st['seq']}，请求 {n.count} 次",
+                          f"Sync done: {len(s.st['ids'])} events, seq {s.st['seq']}, {n.count} requests"))
                     return 0
                 if read_token() != token or database_id() != db:
                     break   # 密钥或表换了，重连
                 time.sleep(0.5)
         except NotionError as e:
-            why = WHY.get(e.code, f"Notion 出错 {e.code}")
-            if told != why:
-                log(f"出错：{why}")
-                told = why
-            status(ok=False, why=why)
+            w = why(e.code)
+            if told != w:
+                log(t(f"出错：{w}", f"Error: {w}"))
+                told = w
+            status(ok=False, why=w)
             if args.once:
                 return 1
             time.sleep(30)
         except Exception as e:
-            log(f"出错：{type(e).__name__}: {str(e)[:200]}")
+            log(t("出错：", "Error: ") + f"{type(e).__name__}: {str(e)[:200]}")
             status(ok=False, why=type(e).__name__)
             if args.once:
                 return 1
@@ -504,35 +606,41 @@ def cmd_sync(args):
 
 # ---------- init / setup-notion / check ----------
 def ask_token(args):
-    t = os.environ.get("LIVEBOARD_NOTION_TOKEN", "").strip()
+    tk = os.environ.get("LIVEBOARD_NOTION_TOKEN", "").strip()
     if args.token_stdin:
-        t = sys.stdin.readline().strip()
-    if not t and read_token() and not args.new_token:
+        tk = sys.stdin.readline().strip()
+    if not tk and read_token() and not args.new_token:
         return read_token(), False
-    if not t:
+    if not tk:
         if not sys.stdin.isatty():
-            die("要粘贴连接密钥：请在终端里运行，或用 --token-stdin 从标准输入读")
-        t = getpass.getpass("粘贴 Notion 连接密钥（不会显示）：").strip()
-    if not re.match(r"^(ntn_|secret_)[A-Za-z0-9_-]{20,}$", t):
-        die("看起来不像 Notion 连接密钥：应该以 ntn_ 或 secret_ 开头")
-    return t, True
+            die(t("要粘贴连接密钥：请在终端里运行，或用 --token-stdin 从标准输入读",
+                  "The token has to be pasted: run this in a terminal, or use --token-stdin to read it from standard input"))
+        tok = getpass.getpass(t("粘贴 Notion 连接密钥（不会显示）：", "Paste the Notion integration token (input is hidden): ")).strip()
+    else:
+        tok = tk
+    if not re.match(r"^(ntn_|secret_)[A-Za-z0-9_-]{20,}$", tok):
+        die(t("看起来不像 Notion 连接密钥：应该以 ntn_ 或 secret_ 开头", "That doesn't look like a Notion integration token: it should start with ntn_ or secret_"))
+    return tok, True
 
 
 def verify_token(n):
     try:
         me = n.call("GET", "/v1/users/me")
     except NotionError as e:
-        die(WHY.get(e.code, f"Notion 出错 {e.code}"), 1)
+        die(why(e.code), 1)
     ws = (me.get("bot") or {}).get("workspace_name") or ""
-    print(f"密钥有效：连接「{me.get('name') or '未命名'}」" + (f"，工作区「{ws}」" if ws else ""))
+    nm = me.get("name") or t("未命名", "unnamed")
+    print(t(f"密钥有效：连接「{nm}」" + (f"，工作区「{ws}」" if ws else ""),
+            f"Token is valid: integration \"{nm}\"" + (f", workspace \"{ws}\"" if ws else "")))
 
 
 def ensure_home():
     os.makedirs(STATE, exist_ok=True)
     os.chmod(HOME, 0o700)
-    if not os.path.exists(ROSTER) and os.path.exists(EXAMPLE_ROSTER):
-        shutil.copyfile(EXAMPLE_ROSTER, ROSTER)
-        print(f"已放一份示例名单：{ROSTER}（改成你自己的成员）")
+    src = EXAMPLE_ROSTER_EN if LANG == "en" and os.path.exists(EXAMPLE_ROSTER_EN) else EXAMPLE_ROSTER
+    if not os.path.exists(ROSTER) and os.path.exists(src):
+        shutil.copyfile(src, ROSTER)
+        print(t(f"已放一份示例名单：{ROSTER}（改成你自己的成员）", f"Added an example roster: {ROSTER} (replace it with your own members)"))
 
 
 def save_db(db):
@@ -548,23 +656,25 @@ def cmd_init(args):
     verify_token(n)
     if fresh and not os.environ.get("LIVEBOARD_NOTION_TOKEN"):
         save_token(token)
-        print(f"密钥已保存：{TOKEN_FILE}（600 权限）")
+        print(t(f"密钥已保存：{TOKEN_FILE}（600 权限）", f"Token saved: {TOKEN_FILE} (mode 600)"))
     if args.database:
         db = norm_id(args.database)
         if not db:
-            die("没认出表的 ID：请粘贴表的链接或 32 位 ID")
+            die(t("没认出表的 ID：请粘贴表的链接或 32 位 ID", "Couldn't find a table ID: paste the table's link or its 32-character ID"))
         try:
             bad = schema_problems(n.call("GET", f"/v1/databases/{db}"))
         except NotionError as e:
-            die(WHY.get(e.code, f"Notion 出错 {e.code}"), 1)
+            die(why(e.code), 1)
         if bad:
-            die("这张表缺少或类型不对的列：" + "、".join(bad), 1)
+            die(t("这张表缺少或类型不对的列：", "This table is missing columns or has the wrong column types: ") + sep().join(bad), 1)
         save_db(db)
-        print(f"表 ID 已保存：{CONFIG}")
+        print(t(f"表 ID 已保存：{CONFIG}", f"Table ID saved: {CONFIG}"))
     elif not database_id():
-        print("还没有表 ID：在 Mac App 的设置向导里建好表后，运行  liveboard.py init --database <表ID>")
-        print("或者不用 App：liveboard.py setup-notion --parent <一个已加上连接的页面链接>")
-    print("下一步：liveboard.py check，然后 liveboard.py sync")
+        print(t("还没有表 ID：在 Mac App 的设置向导里建好表后，运行  liveboard.py init --database <表ID>",
+                "No table ID yet: after the Mac app's setup creates the table, run  liveboard.py init --database <table ID>"))
+        print(t("或者不用 App：liveboard.py setup-notion --parent <一个已加上连接的页面链接>",
+                "Or without the app: liveboard.py setup-notion --parent <link to a page your integration is connected to>"))
+    print(t("下一步：liveboard.py check，然后 liveboard.py sync", "Next: liveboard.py check, then liveboard.py sync"))
     return 0
 
 
@@ -572,51 +682,55 @@ def cmd_setup_notion(args):
     ensure_home()
     token = read_token()
     if not token:
-        die("还没有连接密钥：先运行 liveboard.py init")
+        die(t("还没有连接密钥：先运行 liveboard.py init", "No integration token yet: run liveboard.py init first"))
     parent = norm_id(args.parent)
     if not parent:
-        die("没认出页面 ID：请粘贴页面的链接或 32 位 ID")
+        die(t("没认出页面 ID：请粘贴页面的链接或 32 位 ID", "Couldn't find a page ID: paste the page's link or its 32-character ID"))
     n = Notion(token, retries=3)
     try:
         p = n.call("POST", "/v1/pages", {"parent": {"type": "page_id", "page_id": parent},
-                                         "properties": {"title": {"title": [{"type": "text", "text": {"content": "实时看板中转"}}]}}})
+                                         "properties": {"title": {"title": [{"type": "text", "text": {"content": t("实时看板中转", "Live Board relay")}}]}}})
         d = n.call("POST", "/v1/databases", {"parent": {"type": "page_id", "page_id": norm_id(p["id"])},
-                                             "title": [{"type": "text", "text": {"content": "看板数据"}}], "is_inline": True, "properties": SCHEMA})
+                                             "title": [{"type": "text", "text": {"content": t("看板数据", "Board data")}}], "is_inline": True, "properties": SCHEMA})
     except NotionError as e:
-        die(WHY.get(e.code, f"Notion 出错 {e.code}") + "（页面要先在 Notion 里 ⋯ → 连接 → 加上你的连接）", 1)
+        die(why(e.code) + t("（页面要先在 Notion 里 ⋯ → 连接 → 加上你的连接）", " (in Notion, open the page's ⋯ menu → Connections → add your integration first)"), 1)
     db = norm_id(d["id"])
     save_db(db)
-    print(f"已建好「看板数据」表，表 ID：{db}")
-    print("在 Mac App 的设置向导里选「已经有看板数据表了？」，粘贴这个 ID 即可")
+    print(t(f"已建好「看板数据」表，表 ID：{db}", f"Created the \"Board data\" table, table ID: {db}"))
+    print(t("在 Mac App 的设置向导里选「已经有看板数据表了？」，粘贴这个 ID 即可",
+            "In the Mac app's setup, choose \"Already have a board data table?\" and paste this ID"))
     return 0
 
 
 def cmd_check(args):
     ok = True
     r = load_roster(strict=False)
-    probs = roster_problems(r) if r.get("bots") else ["名单是空的或读不了：" + ROSTER]
+    probs = roster_problems(r) if r.get("bots") else [t("名单是空的或读不了：", "the roster is empty or unreadable: ") + ROSTER]
     for p in probs:
-        print(("提醒：" if "提醒" in p else "名单有问题：") + p)
-        ok = ok and "提醒" in p
+        warn = "提醒" in p or "heads-up" in p
+        print((t("提醒：", "Note: ") if warn else t("名单有问题：", "Roster problem: ")) + p)
+        ok = ok and warn
     if r.get("bots"):
-        print(f"名单：{len(r['bots'])} 个成员，{len(r.get('stages') or [])} 个流程步骤")
+        print(t(f"名单：{len(r['bots'])} 个成员，{len(r.get('stages') or [])} 个流程步骤",
+                f"Roster: {len(r['bots'])} members, {len(r.get('stages') or [])} workflow steps"))
     token, db = read_token(), database_id()
     if not token:
-        print("缺少连接密钥：运行 liveboard.py init"); return 1
+        print(t("缺少连接密钥：运行 liveboard.py init", "Missing integration token: run liveboard.py init")); return 1
     if not db:
-        print("缺少表 ID：运行 liveboard.py init --database <表ID>"); return 1
+        print(t("缺少表 ID：运行 liveboard.py init --database <表ID>", "Missing table ID: run liveboard.py init --database <table ID>")); return 1
     n = Notion(token, retries=3)
     try:
         n.call("GET", "/v1/users/me")
         bad = schema_problems(n.call("GET", f"/v1/databases/{db}"))
     except NotionError as e:
-        print("Notion：" + WHY.get(e.code, f"出错 {e.code}")); return 1
+        print(t("Notion：", "Notion: ") + why(e.code)); return 1
     if bad:
-        print("表结构不对，缺少：" + "、".join(bad)); return 1
-    print("Notion：密钥有效，表结构正确")
+        print(t("表结构不对，缺少：", "Wrong table structure, missing: ") + sep().join(bad)); return 1
+    print(t("Notion：密钥有效，表结构正确", "Notion: token is valid, table structure is correct"))
     st = read_json(STATUS)
     if st:
-        print(f"上次同步状态（{st.get('at')}）：" + ("正常" if st.get("ok") else f"出错：{st.get('why')}"))
+        print(t(f"上次同步状态（{st.get('at')}）：", f"Last sync status ({st.get('at')}): ")
+              + (t("正常", "OK") if st.get("ok") else t("出错：", "error: ") + str(st.get("why"))))
     return 0 if ok else 1
 
 
@@ -635,24 +749,25 @@ def resolve(name, names, field):
     hits = [x for x in names if (len(n) >= 2 and n in x)]
     if len(hits) == 1:
         return hits[0]
-    die(f"{field} 不认识：{name}。可用：{'、'.join(names)}")
+    die(t(f"{field} 不认识：{name}。可用：{'、'.join(names)}", f"{field}: unknown name {name}. Available: {', '.join(names)}"))
 
 
 def parse_ts(raw):
-    t = raw.strip()
-    if not TS_RE.match(t):
-        die(f"--ts 格式不对：{raw}。要写成 2026-01-31T08:30 或 2026-01-31T08:30:00+00:00")
+    v = raw.strip()
+    if not TS_RE.match(v):
+        die(t(f"--ts 格式不对：{raw}。要写成 2026-01-31T08:30 或 2026-01-31T08:30:00+00:00",
+              f"--ts has the wrong format: {raw}. Use 2026-01-31T08:30 or 2026-01-31T08:30:00+00:00"))
     try:
-        d = datetime.fromisoformat(t.replace("Z", "+00:00").replace(" ", "T"))
+        d = datetime.fromisoformat(v.replace("Z", "+00:00").replace(" ", "T"))
     except ValueError:
-        die(f"--ts 不是有效的日期时间：{raw}")
+        die(t(f"--ts 不是有效的日期时间：{raw}", f"--ts is not a valid date and time: {raw}"))
     now = now_local()
     if d.tzinfo is None:
         d = d.replace(tzinfo=now.tzinfo)
     if d > now + timedelta(minutes=AHEAD_MIN):
-        die(f"--ts 在未来：{raw}。补记只能补已经发生的事")
+        die(t(f"--ts 在未来：{raw}。补记只能补已经发生的事", f"--ts is in the future: {raw}. A backfill can only record things that already happened"))
     if d < now - timedelta(days=BACK_DAYS):
-        die(f"--ts 太早：{raw}。只能补 {BACK_DAYS} 天以内的事")
+        die(t(f"--ts 太早：{raw}。只能补 {BACK_DAYS} 天以内的事", f"--ts is too early: {raw}. You can only backfill the last {BACK_DAYS} days"))
     return d.isoformat(timespec="seconds")
 
 
@@ -671,48 +786,48 @@ def cmd_ev(args):
     names = [b["name"] for b in load_roster()["bots"] if isinstance(b, dict) and b.get("name")]
     typ = TYPE_ALIAS.get(args.type.lower(), args.type)
     if typ not in TYPES:
-        die(f"类型只能是：{' '.join(TYPES)}（收到：{args.type}）")
+        die(t(f"类型只能是：{' '.join(TYPES)}（收到：{args.type}）", f"type must be one of: {types_txt()} (got: {args.type})"))
     source = SOURCES.get(args.source)
     if not source:
-        die(f"--source 只能是 打卡 或 补记（收到：{args.source}）")
+        die(t(f"--source 只能是 打卡 或 补记（收到：{args.source}）", f"--source must be checkin or backfill (got: {args.source})"))
     if args.ts and source != "backfill":
-        die("--ts 只有补记才能用：… --source 补记 --ts <时间>")
+        die(t("--ts 只有补记才能用：… --source 补记 --ts <时间>", "--ts only works with a backfill: … --source backfill --ts <time>"))
     if source == "backfill" and not args.ts:
-        die("补记要写 --ts <时间>，例如 --ts 2026-01-31T08:30")
+        die(t("补记要写 --ts <时间>，例如 --ts 2026-01-31T08:30", "A backfill needs --ts <time>, e.g. --ts 2026-01-31T08:30"))
     ts = parse_ts(args.ts) if args.ts else now_local().isoformat(timespec="seconds")
     bot = resolve(args.bot, names, "--bot")
     to = resolve(args.to, names, "--to") if args.to else None
     if typ in ("交接", "退回") and not to:
-        die("交接和退回要写 --to <对方>")
+        die(t("交接和退回要写 --to <对方>", "a handoff or return needs --to <member>"))
     msg = " ".join(args.msg.split())
     if not msg:
-        die("--msg 不能为空")
+        die(t("--msg 不能为空", "--msg can't be empty"))
     if len(msg) > MSG_MAX:
-        die(f"--msg 最多 {MSG_MAX} 个字（现在 {len(msg)} 个），写一句话就好")
+        die(t(f"--msg 最多 {MSG_MAX} 个字（现在 {len(msg)} 个），写一句话就好", f"--msg is at most {MSG_MAX} characters (now {len(msg)}); one sentence is enough"))
     project = (args.project or "").strip().strip("/").split("/")[-1] or None
     texts = [msg, project or "", args.task or ""] + args.file
     if any(looks_secret(x) for x in texts):
-        die("内容里像有密钥或密码，不能写进日志")
+        die(t("内容里像有密钥或密码，不能写进日志", "The text looks like it contains a key or password, so it can't go into the log"))
     gate = args.gate.strip() if args.gate else None
     if gate and not GATE.match(gate):
-        die("--gate 只能是 1–16 个字母、数字或 _ . -")
+        die(t("--gate 只能是 1–16 个字母、数字或 _ . -", "--gate must be 1–16 letters, digits or _ . -"))
     files = []
     for f in args.file:
         if not os.path.exists(os.path.expanduser(f)):
-            die(f"--file 不存在：{f}")
+            die(t(f"--file 不存在：{f}", f"--file doesn't exist: {f}"))
         files.append(os.path.basename(os.path.normpath(f)))   # 只记文件名：完整路径可能带用户名、目录结构
     ev = {"v": 1, "id": ulid(), "ts": ts, "bot": bot, "type": typ, "project": project, "task_id": args.task or None,
           "to": to, "gate": gate, "message": msg, "files": files, "source": source}
     if args.test:
         ev["test"] = True
     append_event(ev)
-    print(f"已记：{ev['ts'][11:16]} {bot} {typ}{(' → ' + to) if to else ''}：{msg}")
+    print(t("已记：", "Logged: ") + f"{ev['ts'][11:16]} {bot} {ty(typ)}{(' → ' + to) if to else ''}{t('：', ': ')}{msg}")
     return 0
 
 
 def cmd_log(args):
     if not os.path.exists(EVENTS):
-        print("（还没有事件）")
+        print(t("（还没有事件）", "(no events yet)"))
         return 0
     with open(EVENTS, encoding="utf-8") as f:
         lines = f.read().splitlines()[-args.n:]
@@ -721,18 +836,21 @@ def cmd_log(args):
             e = json.loads(line)
         except ValueError:
             continue
-        tag = "测试" if e.get("test") else {"cli": "打卡", "backfill": "补记"}.get(e.get("source"), "推断")
+        if LANG == "en":
+            tag = "test" if e.get("test") else {"cli": "check-in", "backfill": "backfill"}.get(e.get("source"), "inferred")
+        else:
+            tag = "测试" if e.get("test") else {"cli": "打卡", "backfill": "补记"}.get(e.get("source"), "推断")
         to = f" → {e['to']}" if e.get("to") else ""
-        print(f"{e['ts'][11:16]}  {e['bot']}  {e['type']}{to}  {e['message']}  [{tag}]")
+        print(f"{e['ts'][11:16]}  {e['bot']}  {ty(e['type'])}{to}  {e['message']}  [{tag}]")
     return 0
 
 
 def cmd_roster(args):
     r = load_roster()
-    print("成员：" + "、".join(b.get("name", "?") for b in r["bots"]))
+    print(t("成员：", "Members: ") + sep().join(b.get("name", "?") for b in r["bots"]))
     if r.get("stages"):
-        print("流程：" + " → ".join(r["stages"]))
-    print("类型：" + " ".join(TYPES))
+        print(t("流程：", "Steps: ") + " → ".join(r["stages"]))
+    print(t("类型：", "Types: ") + types_txt())
     return 0
 
 
@@ -807,7 +925,7 @@ class Preview(BaseHTTPRequestHandler):
             return self.send(400, {"error": "bad json"})
         names = {b.get("name") for b in load_roster(strict=False).get("bots", []) if isinstance(b, dict)}
         if not valid_slots(o.get("slots"), names):
-            return self.send(400, {"error": f"slots 要是 {SLOT_N} 个不重复、名单里有的名字"})
+            return self.send(400, {"error": t(f"slots 要是 {SLOT_N} 个不重复、名单里有的名字", f"slots must be {SLOT_N} distinct names from the roster")})
         cur = read_slots()
         if o.get("ifEmpty") and cur:
             return self.send(200, dict(cur, kept=True))
@@ -817,7 +935,8 @@ class Preview(BaseHTTPRequestHandler):
 def cmd_serve(args):
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Preview)
     srv.daemon_threads = True
-    log(f"本机预览服务：http://127.0.0.1:{args.port}（只给 board/ 的 npm run dev 用；按 Ctrl+C 停止）")
+    log(t(f"本机预览服务：http://127.0.0.1:{args.port}（只给 board/ 的 npm run dev 用；按 Ctrl+C 停止）",
+          f"Local preview server: http://127.0.0.1:{args.port} (only for board/'s npm run dev; press Ctrl+C to stop)"))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -826,18 +945,26 @@ def cmd_serve(args):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="liveboard.py", description="实时看板写入端", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    global LANG
+    flag, argv = take_lang(list(sys.argv[1:] if argv is None else argv))
+    LANG = flag or env_lang()
+    en = LANG == "en"
+    p = argparse.ArgumentParser(prog="liveboard.py", description=t("实时看板写入端", "Live Board writer"),
+                                formatter_class=argparse.RawDescriptionHelpFormatter, epilog=DOC_EN if en else __doc__)
+    if en:
+        p._positionals.title, p._optionals.title = "commands", "options"
+    p.add_argument("--lang", choices=["zh", "en"], help=t("提示语言（默认跟随 LANG）", "message language (defaults to LANG)"))
     sub = p.add_subparsers(dest="cmd")
-    s = sub.add_parser("init", help="保存连接密钥和表 ID")
+    s = sub.add_parser("init", help=t("保存连接密钥和表 ID", "save the integration token and table ID"))
     s.add_argument("--database")
-    s.add_argument("--token-stdin", action="store_true", help="从标准输入读一行密钥（脚本里用）")
-    s.add_argument("--new-token", action="store_true", help="已经存过密钥也重新输入")
+    s.add_argument("--token-stdin", action="store_true", help=t("从标准输入读一行密钥（脚本里用）", "read the token from one line of standard input (for scripts)"))
+    s.add_argument("--new-token", action="store_true", help=t("已经存过密钥也重新输入", "enter a new token even if one is saved"))
     s.set_defaults(fn=cmd_init)
-    s = sub.add_parser("setup-notion", help="在一个页面里建中转页和看板表")
+    s = sub.add_parser("setup-notion", help=t("在一个页面里建中转页和看板表", "create the relay page and board table inside a page"))
     s.add_argument("--parent", required=True)
     s.set_defaults(fn=cmd_setup_notion)
-    sub.add_parser("check", help="检查设置").set_defaults(fn=cmd_check)
-    s = sub.add_parser("ev", help="打卡")
+    sub.add_parser("check", help=t("检查设置", "check the setup")).set_defaults(fn=cmd_check)
+    s = sub.add_parser("ev", help=t("打卡", "log an event"))
     s.add_argument("type")
     s.add_argument("--bot", required=True)
     s.add_argument("--project")
@@ -850,14 +977,14 @@ def main(argv=None):
     s.add_argument("--source", default="打卡")
     s.add_argument("--ts")
     s.set_defaults(fn=cmd_ev)
-    s = sub.add_parser("log", help="最近的事件")
+    s = sub.add_parser("log", help=t("最近的事件", "recent events"))
     s.add_argument("n", nargs="?", type=int, default=10)
     s.set_defaults(fn=cmd_log)
-    sub.add_parser("roster", help="名单").set_defaults(fn=cmd_roster)
-    s = sub.add_parser("sync", help="同步到 Notion")
+    sub.add_parser("roster", help=t("名单", "roster")).set_defaults(fn=cmd_roster)
+    s = sub.add_parser("sync", help=t("同步到 Notion", "sync to Notion"))
     s.add_argument("--once", action="store_true")
     s.set_defaults(fn=cmd_sync)
-    s = sub.add_parser("serve", help="本机预览服务")
+    s = sub.add_parser("serve", help=t("本机预览服务", "local preview server"))
     s.add_argument("--port", type=int, default=4380)
     s.set_defaults(fn=cmd_serve)
     a = p.parse_args(argv)

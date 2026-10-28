@@ -75,8 +75,8 @@ async def main():
     async with async_playwright() as p:
         b = await p.chromium.launch(args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])
         errs = []
-        async def newpage(w=1280, h=720):
-            ctx = await b.new_context(viewport={"width": w, "height": h}); pg = await ctx.new_page(); pg.set_default_timeout(60000)
+        async def newpage(w=1280, h=720, locale="zh-CN"):   # 默认扮演中文系统；I 段测英文
+            ctx = await b.new_context(viewport={"width": w, "height": h}, locale=locale); pg = await ctx.new_page(); pg.set_default_timeout(60000)
             pg.on("pageerror", lambda e: errs.append("pageerror " + str(e)))
             pg.on("console", lambda m: m.type == "error" and errs.append("console " + m.text))
             return ctx, pg
@@ -250,6 +250,62 @@ async def main():
         g = [post("/__notion/v1/search", {}), post(f"/__notion/v1/databases/{'f'*32}/query", {}),
              post("/__notion/v1/pages", {"parent": {"database_id": db}, "properties": {"类型": {"select": {"name": "事件"}}}})]
         rec("G1 看板通道只放行「查这张表」「加换人行」", g == [403, 403, 403], str(g))
+
+
+        # ---------- I. 界面语言：跟随系统 / 简体中文 / English ----------
+        with open(os.path.join(APP_HOME, "notion_token"), "w") as f: f.write(TOKEN + "\n")   # F 删掉了密钥，放回去
+        os.chmod(os.path.join(APP_HOME, "notion_token"), 0o600)
+        CJK = re.compile(r"[\u4e00-\u9fff]")
+        ctx, pg = await newpage(680, 620, locale="en-US")
+        await pg.goto(BASE + "/setup.html")
+        await pg.wait_for_selector("section[data-step='1']:not([hidden])")
+        body = await pg.inner_text("body"); texts["setup-en"] = body
+        rec("I1 英文系统、语言跟随系统：设置向导是英文", "Set up Live Board" in body and "Connect" in body and not CJK.search(body.replace("简体中文", "")), body[:120].replace("\n", " / "))
+        await pg.fill("#token", "abc"); await pg.click("#verify")
+        t = await pg.inner_text("#msg1"); rec("I2 英文向导的提示也是英文", "doesn't look like" in t and not CJK.search(t), t)
+        rec("I3 英文向导的 <html lang> 是 en", await pg.evaluate("document.documentElement.lang") == "en")
+        await ctx.close()
+
+        ctx, pg = await newpage(locale="en-US")
+        await pg.goto(BASE + "/index.html")
+        await pg.wait_for_function("document.querySelector('#conn span')?.textContent.startsWith('Live')", timeout=60000)
+        await pg.wait_for_function("document.querySelectorAll('.labels .lab:not([hidden])').length === 6", timeout=60000)
+        ui = await pg.evaluate("""() => ({online: document.querySelector('.online').innerText, conn: document.querySelector('#conn').innerText,
+            bench: document.querySelector('#bench-tab span').textContent, more: document.querySelector('#more > summary').textContent,
+            members: document.querySelector('#members > summary').textContent, log: document.querySelector('#logbox > summary').textContent,
+            tag: getComputedStyle(document.querySelector('.flow'), '::before').content, flow: document.querySelector('#flow-now').innerText,
+            modes: [...document.querySelectorAll('.modes button')].map(b => b.textContent).join('|'), lang: document.documentElement.lang,
+            ty: [...document.querySelectorAll('#log .ty')].map(e => e.textContent).join('|'), em: [...document.querySelectorAll('#log em')].map(e => e.textContent).join('|')})""")
+        texts["board-en"] = json.dumps(ui, ensure_ascii=False)
+        chrome = " ".join(str(ui[k]) for k in ("online", "conn", "bench", "more", "members", "log", "tag", "modes", "em"))   # ty 里带成员名（数据），I5 单独查
+        rec("I4 英文系统：看板界面文字是英文（成员名、任务名等数据不翻译）", "Working" in ui["online"] and "Idle" in ui["online"] and ui["bench"] == "Bench" and "More" in ui["more"] and "Live" in ui["modes"] and ui["lang"] == "en" and not CJK.search(chrome), chrome[:200])
+        rec("I5 英文看板：事件类型、来源标签用英文显示", "output" in ui["ty"] and "check-in" in ui["em"], ui["ty"][:80] + " / " + ui["em"][:40])
+        rec("I6 英文看板：流程「Step N of M」", bool(re.search(r"Step\s+\d+\s+of \d+", ui["flow"])), ui["flow"][:80].replace("\n", " "))
+        await pg.screenshot(path=f"{OUT}/I-英文看板.png"); await ctx.close()
+
+        # 中文系统里在向导上手动选 English：马上换成英文、记下来，看板也跟着（App 的设置优先于系统语言）
+        ctx, pg = await newpage(680, 620)
+        await pg.goto(BASE + "/setup.html")
+        await pg.wait_for_selector("#lang")
+        before = await pg.inner_text("h1")
+        await pg.select_option("#lang", "en")
+        await pg.wait_for_function("document.querySelector('h1').textContent.includes('Live Board')")
+        after = await pg.inner_text("h1"); saved = jget(BASE + "/__calls").get("lang")
+        rec("I7 中文系统里在向导选 English：当场换成英文，设置存进 App", "实时看板" in before and "Live Board" in after and saved == "en", f"{before} → {after}；存下 {saved}")
+        pg2 = await ctx.new_page(); await pg2.goto(BASE + "/index.html")
+        await pg2.wait_for_function("document.querySelector('#conn span')?.textContent.startsWith('Live')", timeout=60000)
+        rec("I8 App 里选了 English：中文系统的看板也显示英文", await pg2.evaluate("document.documentElement.lang") == "en")
+        await pg.select_option("#lang", "system")
+        await pg.wait_for_function("document.querySelector('h1').textContent.includes('实时看板')")
+        await pg2.reload(); await pg2.wait_for_function("document.querySelector('#conn span')?.textContent.startsWith('实况')", timeout=60000)
+        rec("I9 改回「跟随系统」：中文系统又显示中文", jget(BASE + "/__calls").get("lang") == "system")
+        await ctx.close()
+        ctx, pg = await newpage(680, 620, locale="en-US")
+        await pg.goto(BASE + "/setup.html"); await pg.wait_for_selector("#lang")
+        await pg.select_option("#lang", "zh-Hans")
+        await pg.wait_for_function("document.querySelector('h1').textContent.includes('实时看板')")
+        rec("I10 英文系统里选简体中文：向导换成中文", jget(BASE + "/__calls").get("lang") == "zh-Hans")
+        await pg.select_option("#lang", "system"); await ctx.close()
 
         # ---------- H. 界面字样 ----------
         hits = {k: sorted(set(m.group(0) for m in AI_WORDS.finditer(v))) for k, v in texts.items()}

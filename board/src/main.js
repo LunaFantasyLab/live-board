@@ -2,26 +2,31 @@ import "@fontsource/anton/latin-400.css";
 import "./style.css";
 import { DEFAULT_TITLE, SLOT_N } from "./data.js";
 import { createScene, LAMP } from "./scene.js";
+import { LANG, t, tyOf } from "./i18n.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const TZ = window.__LIVEBOARD_TZ || undefined;   // 不设就用本机时区
-const fmtHM = new Intl.DateTimeFormat("zh-CN", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtHM = new Intl.DateTimeFormat(LANG === "en" ? "en-GB" : "zh-CN", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtDate = new Intl.DateTimeFormat(LANG === "en" ? "en-US" : "zh-CN", { timeZone: "UTC", month: LANG === "en" ? "short" : "numeric", day: "numeric" });
+document.documentElement.lang = LANG === "en" ? "en" : "zh-CN";
 const fmtDay = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
 const dayOf = (ms) => fmtDay.format(ms);
 const H = 3600e3;
 const params = new URLSearchParams(location.search);
 let mode = params.get("mode") === "replay" ? "replay" : "live";   // 打开就是实况；回放从「更多」进
 // 名单、标题、流程步骤都来自 /api/roster（写入端 roster.json 的原样内容）
-let ROSTER = [], BY = {}, STAGES = [], STAGE_OF = {}, TITLE = DEFAULT_TITLE;
+// 名单没写标题时用界面语言的默认标题；写了就原样显示（用户自己的数据，不翻译）
+const BASE_TITLE = LANG === "en" ? t("title") : DEFAULT_TITLE;
+let ROSTER = [], BY = {}, STAGES = [], STAGE_OF = {}, TITLE = BASE_TITLE;
 const shortOf = (b) => b.short || b.name;
-const short = (n) => (BY[n] ? shortOf(BY[n]) : n || "未署名");
+const short = (n) => (BY[n] ? shortOf(BY[n]) : n || t("unsigned"));
 function useRoster(r) {
   ROSTER = r.bots.filter((b) => b && typeof b.name === "string" && b.name).map((b) => ({ ...b, short: shortOf(b) }));
   BY = Object.fromEntries(ROSTER.map((b) => [b.name, b]));
   STAGES = Array.isArray(r.stages) ? r.stages.map(String) : [];
   STAGE_OF = Object.fromEntries(ROSTER.filter((b) => Number.isInteger(b.stage) && b.stage >= 0 && b.stage < STAGES.length).map((b) => [b.name, b.stage]));
-  setTitle(typeof r.title === "string" && r.title.trim() ? r.title.trim() : DEFAULT_TITLE);
+  setTitle(typeof r.title === "string" && r.title.trim() ? r.title.trim() : BASE_TITLE);
   const nb = $("#banner"); if (nb) { nb.hidden = !r.notice; nb.textContent = r.notice || ""; }
 }
 async function loadRoster() {
@@ -31,17 +36,19 @@ async function loadRoster() {
   // 名单到了：按本机记住的那份（没有就按当前的）重新排一次，名牌文字也跟着名单更新
   slots = fixSlots(savedSlots || slots, all); scene?.assign(slots);
 }
-function setTitle(t) {
+function setTitle(title) {
+  const t = title;
   TITLE = t; document.title = t;
   const h = $(".top h1"); if (!h) return;
   h.setAttribute("aria-label", t);
-  h.innerHTML = [...t].slice(0, 16).map((c) => (c === " " ? "" : `<span${/[\x21-\x7e]/.test(c) ? ' class="l"' : ""} aria-hidden="true">${esc(c)}</span>`)).join("");
+  // 一个字一块拼贴字；空格留一道空隙（英文标题「Live Board」要看得出是两个词）
+  h.innerHTML = [...t].slice(0, 16).map((c) => (/\s/.test(c) ? '<span class="sp" aria-hidden="true"></span>' : `<span${/[\x21-\x7e]/.test(c) ? ' class="l"' : ""} aria-hidden="true">${esc(c)}</span>`)).join("");
 }
 
 // ---------- 状态 ----------
 // st：work 进行中 / wait 待接手 / back 被退回 / confirm 待你确认 / error 报错 / done 刚交完 / idle 空闲 / none 未激活
 // group：on 工作中 / idle 空闲 / off 未激活
-const WORD = { work: "进行中", wait: "待接手", back: "被退回", confirm: "待你确认", error: "报错", done: "刚交完", idle: "空闲", none: "未激活" };
+const WORD = Object.fromEntries(["work", "wait", "back", "confirm", "error", "done", "idle", "none"].map((k) => [k, t("st." + k)]));
 function deriveStates(evs, now) {
   const last = {}, lastIn = {}, seen = new Set();
   for (const e of evs) {
@@ -85,56 +92,58 @@ function pipeline(evs) {
 }
 
 // ---------- 骨架 ----------
+// 替补席大标题：一个字（英文一个字母）一块拼贴字
+const benchLetters = () => [...t("bench")].map((c) => `<span${/[\x21-\x7e]/.test(c) ? ' class="l"' : ""}>${esc(c)}</span>`).join("");
 document.body.dataset.mode = mode;
 document.body.classList.add("fx");   // 常驻待机动画（纯装饰，不代表任何工作状态）
 $("#app").innerHTML = `
 <div class="shell"><div class="rays" aria-hidden="true"></div>
   <header class="top">
     <h1></h1>
-    <p id="conn" class="conn" role="status"><i></i><span>连接中</span></p>
+    <p id="conn" class="conn" role="status"><i></i><span>${t("conn.wait")}</span></p>
   </header>
   <p id="banner" class="banner" hidden></p>
-  <main class="stage" id="stage" aria-label="${SLOT_N} 个工位，点人物可以替换">
-    <p class="loading" id="loading">正在载入模型</p>
+  <main class="stage" id="stage" aria-label="${t("stage.label", { n: SLOT_N })}">
+    <p class="loading" id="loading">${t("loading")}</p>
     
-    <button class="bench-tab" id="bench-tab" aria-haspopup="dialog"><span>替补席</span><b id="bench-n">0</b><i id="bench-new" hidden></i></button>
-    <div class="pop" id="pop" hidden role="dialog" aria-label="工位操作"></div>
+    <button class="bench-tab" id="bench-tab" aria-haspopup="dialog"><span>${t("bench")}</span><b id="bench-n">0</b><i id="bench-new" hidden></i></button>
+    <div class="pop" id="pop" hidden role="dialog" aria-label="${t("pop.label")}"></div>
     <p class="swap-toast" id="swap-toast" role="status" hidden></p>
-    <section class="bench" id="bench" hidden role="dialog" aria-label="替补席">
+    <section class="bench" id="bench" hidden role="dialog" aria-label="${t("bench")}">
       <header class="bench-h">
-        <h2 aria-label="替补席"><span>替</span><span>补</span><span>席</span><b id="bench-n2">0</b></h2>
+        <h2 aria-label="${t("bench")}">${benchLetters()}<b id="bench-n2">0</b></h2>
         <p id="bench-hint"></p>
-        <button class="bench-x" id="bench-x" aria-label="关闭替补席">关闭</button>
+        <button class="bench-x" id="bench-x" aria-label="${t("bench.closeLabel")}">${t("bench.close")}</button>
       </header>
       <div class="bench-slots" id="bench-slots" hidden></div>
       <ul class="bench-grid" id="bench-grid"></ul>
     </section>
   </main>
   <aside class="side">
-    <section class="online" aria-label="在线状态">
-      <div class="big"><b id="n-on">0</b><span>工作中</span></div>
-      <div class="big"><b id="n-idle">0</b><span>空闲</span></div>
-      <div class="big conf" id="conf-cell" hidden><b id="d-conf">0</b><span>待你确认</span></div>
+    <section class="online" aria-label="${t("online.label")}">
+      <div class="big"><b id="n-on">0</b><span>${t("on")}</span></div>
+      <div class="big"><b id="n-idle">0</b><span>${t("idle")}</span></div>
+      <div class="big conf" id="conf-cell" hidden><b id="d-conf">0</b><span>${t("confirm")}</span></div>
     </section>
-    <section class="flow" aria-label="当前任务流程">
+    <section class="flow" aria-label="${t("flow.label")}" data-tag="${t("flow.tag")}">
       <div class="flow-h">
-        <label class="sr" for="proj">任务</label>
+        <label class="sr" for="proj">${t("task")}</label>
         <select id="proj"></select>
       </div>
-      <p class="flow-now" id="flow-now">还没有任务</p>
+      <p class="flow-now" id="flow-now">${t("noTask")}</p>
       <ol class="steps" id="steps"></ol>
     </section>
-    <details id="more"><summary>更多</summary>
-      <details id="members"><summary>成员<span class="cnt">0</span></summary><ul id="mlist" class="mlist"></ul></details>
-      <details id="logbox"><summary>最近动态<span class="cnt" id="logn">0</span></summary><ol id="log" class="log"></ol></details>
+    <details id="more"><summary>${t("more")}</summary>
+      <details id="members"><summary>${t("members")}<span class="cnt">0</span></summary><ul id="mlist" class="mlist"></ul></details>
+      <details id="logbox"><summary>${t("log")}<span class="cnt" id="logn">0</span></summary><ol id="log" class="log"></ol></details>
       <footer class="foot">
-        <nav class="modes" aria-label="视图">
-          <button data-m="live">实况</button><button data-m="replay">回放</button>
+        <nav class="modes" aria-label="${t("views")}">
+          <button data-m="live">${t("live")}</button><button data-m="replay">${t("replay")}</button>
         </nav>
         <div class="rp" id="rp">
-          <select id="day" aria-label="回放日期"></select>
-          <button id="play" class="play" aria-label="暂停">暂停</button>
-          <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="回放进度">
+          <select id="day" aria-label="${t("day")}"></select>
+          <button id="play" class="play" aria-label="${t("pause")}">${t("pause")}</button>
+          <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="${t("scrub")}">
         </div>
       </footer>
     </details>
@@ -146,8 +155,8 @@ $("#app").innerHTML = `
 let all = [], shown = [], vnow = Date.now(), project = null, pinned = false, focus = null;
 const prep = (e) => ({ ...e, _t: Date.parse(e.ts) });
 const sortT = (a, b) => a._t - b._t;
-const tagOf = (e) => (e.test ? "测试" : e.source === "watcher" ? "推断" : e.source === "backfill" ? "补记" : "打卡");
-setTitle(DEFAULT_TITLE);
+const tagOf = (e) => t(e.test ? "tag.test" : e.source === "watcher" ? "tag.watcher" : e.source === "backfill" ? "tag.backfill" : "tag.checkin");
+setTitle(BASE_TITLE);
 
 // ---------- 6 个工位 ----------
 // 工位上坐谁以写入端的 state/slots.json 为准（经 /__board/slots 读写；App 里由 relay.js 经 Notion 转过去），
@@ -207,7 +216,7 @@ async function syncSlots() { if (!USE_SLOTS) return; const a = await fetchSlots(
 function saveSlots() {
   savedSlots = slots.slice(); defaultsDone = true; store.set(SLOT_KEY, JSON.stringify(slots));
   const mine = slots.slice();
-  pushSlots(mine, "manual").then((r) => { if (r) serverHad = true; else if (srv === "ok") toast("没存到服务器，只有这台设备记得"); });
+  pushSlots(mine, "manual").then((r) => { if (r) serverHad = true; else if (srv === "ok") toast(t("toast.notSaved")); });
 }
 async function applyDefaults() {   // 服务器上存过就用服务器的；没存过才按最近动态排一次，然后存上去固定下来
   if (!USE_SLOTS) return;
@@ -233,7 +242,7 @@ window.addEventListener("liveboard:roster", () => loadRoster().then(() => { if (
 let scene = null;
 createScene($("#stage"), ROSTER, { onPick: (n, o) => showPop(n, o), slots: slots.slice(), labelOf: (n) => short(n) })
   .then((s) => { scene = s; $("#loading").remove(); if (USE_SLOTS) scene.assign(slots); render(); })
-  .catch((err) => { $("#loading").textContent = "模型没载入：" + err.message; });
+  .catch((err) => { $("#loading").textContent = t("loadFail", { msg: err.message }); });
 
 function render() {
   const states = deriveStates(shown, vnow);
@@ -256,8 +265,8 @@ function showPop(n, o = {}) {
   if (!n || !slots.includes(n)) { hidePop(); return; }
   if (popFor === n && !pop.hidden && !o.label) { hidePop(); return; }
   popFor = n; const s = lastStates[n] || { st: "none" }, i = slots.indexOf(n);
-  pop.innerHTML = `<p class="pop-h"><i>工位 ${i + 1}</i><b>${esc(short(n))}</b><em>${WORD[s.st] || ""}</em></p>
-    <div class="pop-b"><button class="pop-swap" id="pop-swap">替换</button><button class="pop-info" id="pop-info">详情</button></div>`;
+  pop.innerHTML = `<p class="pop-h"><i>${t("pop.slot", { n: i + 1 })}</i><b>${esc(short(n))}</b><em>${WORD[s.st] || ""}</em></p>
+    <div class="pop-b"><button class="pop-swap" id="pop-swap">${t("pop.swap")}</button><button class="pop-info" id="pop-info">${t("pop.info")}</button></div>`;
   pop.hidden = false;
   const p = scene?.screenOf(n), st = $("#stage").getBoundingClientRect();
   const pw = pop.offsetWidth, ph = pop.offsetHeight;
@@ -284,7 +293,7 @@ function putOn(n, k) {
   const out = slots[k], cur = slots.indexOf(n); if (cur === k) return;
   const next = slots.slice(); next[k] = n; if (cur >= 0) next[cur] = out;
   slots = next; saveSlots(); scene?.assign(slots); closeBench(); render();
-  toast(`<b>${esc(short(n))}</b> 上场${cur >= 0 ? `，和 <b>${esc(short(out))}</b> 换位` : `，<b>${esc(short(out))}</b> 回替补席`}`, true);
+  toast(t("toast.on", { who: esc(short(n)) }) + t(cur >= 0 ? "toast.swap" : "toast.out", { who: esc(short(out)) }), true);
 }
 function toast(msg, html = false) {
   const t = $("#swap-toast"); if (!t) return;
@@ -298,21 +307,21 @@ function renderBench(states) {
   const la = lastActOf(shown), bench = ROSTER.filter((b) => !slots.includes(b.name));
   const fresh = bench.filter((b) => isFresh(b.name, la));
   $("#bench-n").textContent = bench.length; $("#bench-n2").textContent = bench.length;
-  const nb = $("#bench-new"); nb.hidden = !fresh.length; nb.textContent = fresh.length ? `${fresh.length} 新` : "";
-  $("#bench-tab").title = fresh.length ? `替补席里有新动态：${fresh.map((b) => b.short).join("、")}` : "替补席：没上工位的成员";
+  const nb = $("#bench-new"); nb.hidden = !fresh.length; nb.textContent = fresh.length ? t("bench.new", { n: fresh.length }) : "";
+  $("#bench-tab").title = fresh.length ? t("bench.newTip", { names: fresh.map((b) => b.short).join(t("listSep")) }) : t("bench.tip");
   if ($("#bench").hidden) return;
   const order = { on: 0, idle: 1, off: 2 };
   const list = bench.map((b) => ({ b, s: states[b.name] || { st: "none", group: "off" }, f: isFresh(b.name, la), t: la[b.name] || 0 }))
     .sort((x, y) => (y.f - x.f) || (order[x.s.group] - order[y.s.group]) || (y.t - x.t));
   const target = benchFor >= 0 ? slots[benchFor] : null;
-  $("#bench-hint").innerHTML = target ? `换下 <b>${esc(short(target))}</b>（工位 ${benchFor + 1}），点一位上场`
-    : benchPick ? `<b>${esc(short(benchPick))}</b> 坐哪个工位？点下面的工位` : "点一位成员，再选它坐哪个工位";
+  $("#bench-hint").innerHTML = target ? t("bench.hintSwap", { who: esc(short(target)), n: benchFor + 1 })
+    : benchPick ? t("bench.hintPick", { who: esc(short(benchPick)) }) : t("bench.hint");
   const sl = $("#bench-slots"); sl.hidden = !benchPick;
   setHTML(sl, benchPick ? slots.map((n, i) => `<button data-k="${i}"><i>${i + 1}</i>${esc(short(n))}</button>`).join("") : "");
   setHTML($("#bench-grid"), list.map(({ b, s, f, t }, i) => `<li><button class="card${benchPick === b.name ? " sel" : ""}" data-bot="${esc(b.name)}" data-g="${s.group}" data-st="${s.st}"${f ? ' data-new="1"' : ""}>
       <span class="seal" aria-hidden="true">${esc(b.seal || [...b.short][0] || "")}</span><b>${esc(b.short)}</b><small>${esc(b.name)}</small>
-      <em>${WORD[s.st]}${t ? `<time>${fmtHM.format(t)}</time>` : ""}</em>${f ? `<i class="nw">新</i>` : ""}</button></li>`).join("")
-    || `<li class="empty">全员都在工位上</li>`);
+      <em>${WORD[s.st]}${t ? `<time>${fmtHM.format(t)}</time>` : ""}</em>${f ? `<i class="nw">${t("bench.newMark")}</i>` : ""}</button></li>`).join("")
+    || `<li class="empty">${t("bench.empty")}</li>`);
 }
 if (USE_SLOTS) {
   $("#bench-tab").onclick = () => ($("#bench").hidden ? (hidePop(), openBench(-1)) : closeBench());
@@ -335,7 +344,7 @@ function renderMembers(states) {
   const list = ROSTER.map((b) => ({ b, s: states[b.name] })).sort((x, y) => order[x.s.group] - order[y.s.group]);
   $("#mlist").innerHTML = list.map(({ b, s }) => {
     const r = s.ref;
-    const note = !r ? "" : s.incoming ? `${short(r.bot)}${r.type === "退回" ? "退回" : "交来"}：${r.message}` : r.message;
+    const note = !r ? "" : s.incoming ? t(r.type === "退回" ? "note.back" : "note.in", { who: short(r.bot), msg: r.message }) : r.message;
     return `<li data-bot="${esc(b.name)}" data-g="${s.group}" data-st="${s.st}" class="${focus === b.name ? "sel" : ""}">
       <i style="${LAMP[s.st] && s.group === "on" ? `--c:${LAMP[s.st]}` : ""}"></i><b>${esc(b.short)}</b><em>${WORD[s.st]}</em>
       <time>${r ? fmtHM.format(r._t) : ""}</time>${note ? `<p>${esc(note)}</p>` : ""}</li>`;
@@ -358,14 +367,14 @@ function renderFlow() {
   const ps = projects();
   if (!pinned || !ps.includes(project)) project = ps[0] || null;
   const sel = $("#proj");
-  sel.innerHTML = ps.length ? ps.map((p) => `<option value="${esc(p)}"${p === project ? " selected" : ""}>${esc(projName(p))}</option>`).join("") : `<option>暂无任务</option>`;
+  sel.innerHTML = ps.length ? ps.map((p) => `<option value="${esc(p)}"${p === project ? " selected" : ""}>${esc(projName(p))}</option>`).join("") : `<option>${t("noTaskOpt")}</option>`;
   sel.disabled = ps.length < 2;
   const { steps, cur, latest } = pipeline(shown.filter((e) => e.project === project));
   const lastP = [...shown].reverse().find((e) => e.project === project);
-  $("#flow-now").innerHTML = cur < 0 ? (lastP ? `${esc(short(lastP.bot))} ${esc(lastP.type)}：${esc(lastP.message)}<time>${fmtHM.format(lastP._t)}</time>` : "还没有任务")
-    : `第 <b>${cur + 1}</b> 步，共 ${STAGES.length} 步：${esc(STAGES[cur])}${latest ? `<time>${fmtHM.format(latest._t)}</time>` : ""}`;
+  $("#flow-now").innerHTML = cur < 0 ? (lastP ? t("flow.last", { who: esc(short(lastP.bot)), ty: esc(tyOf(lastP.type)), msg: esc(lastP.message) }) + `<time>${fmtHM.format(lastP._t)}</time>` : t("noTask"))
+    : t("flow.step", { n: cur + 1, total: STAGES.length, name: esc(STAGES[cur]) }) + (latest ? `<time>${fmtHM.format(latest._t)}</time>` : "");
   $("#steps").hidden = cur < 0;   // 名单里没配流程步骤、或这个任务没走到任何一步：不画步骤条，只留最新一句
-  $("#steps").innerHTML = steps.map((s, i) => `<li data-st="${s.st}" title="${esc(s.name)}${s.e ? "：" + esc(s.e.message) : ""}"><span class="sr">${i + 1} ${esc(s.name)}</span></li>`).join("");
+  $("#steps").innerHTML = steps.map((s, i) => `<li data-st="${s.st}" title="${esc(s.name)}${s.e ? t("sep") + esc(s.e.message) : ""}"><span class="sr">${i + 1} ${esc(s.name)}</span></li>`).join("");
 }
 // 只显示真正要你动手的「待你确认」，有才显示。
 function renderToday(states) {
@@ -375,7 +384,7 @@ function renderToday(states) {
 function renderLog() {
   const evs = shown.slice(-40).reverse();
   $("#logn").textContent = shown.length;
-  $("#log").innerHTML = evs.map((e) => `<li><time>${fmtHM.format(e._t)}</time><b>${esc(short(e.bot))}</b><span class="ty">${esc(e.type)}${e.to ? "给" + esc(short(e.to)) : ""}</span><p>${esc(e.message)}</p><em>${tagOf(e)}</em></li>`).join("") || `<li class="empty">还没有动态。成员打卡以后会出现在这里。</li>`;
+  $("#log").innerHTML = evs.map((e) => `<li><time>${fmtHM.format(e._t)}</time><b>${esc(short(e.bot))}</b><span class="ty">${e.to ? t("log.to", { ty: esc(tyOf(e.type)), to: esc(short(e.to)) }) : esc(tyOf(e.type))}</span><p>${esc(e.message)}</p><em>${tagOf(e)}</em></li>`).join("") || `<li class="empty">${t("log.empty")}</li>`;
 }
 function animate(e) { if (e.to && (e.type === "交接" || e.type === "退回")) scene?.handoff(e.bot, e.to, e.type); }
 
@@ -388,13 +397,13 @@ let rpIdx = 0, rpDay = [], rpStart = 0, rpEnd = 0, last = 0;
 function setConn(k, t) { const c = $("#conn"); c.dataset.k = k; c.querySelector("span").textContent = t; }
 function stopAll() { es?.close(); es = null; clearInterval(timer); timer = null; cancelAnimationFrame(raf); scene?.clearFlights(); }
 
-function liveLabel() { setConn("ok", `实况，${fmtHM.format(Date.now())} 更新`); }
+function liveLabel() { setConn("ok", t("conn.live", { time: fmtHM.format(Date.now()) })); }
 async function startLive() {
-  setConn("wait", "连接中");
+  setConn("wait", t("conn.wait"));
   await loadRoster(); await syncSlots(); if (mode !== "live") return;
   es?.close();
   es = new EventSource("/api/stream");
-  es.onerror = () => setConn("bad", "连接断开，正在重连");
+  es.onerror = () => setConn("bad", t("conn.bad"));
   es.addEventListener("init", (m) => { all = JSON.parse(m.data).filter((e) => !e.test).map(prep).sort(sortT); shown = all.slice(); vnow = Date.now(); applyDefaults(); liveLabel(); render(); });
   es.addEventListener("ev", (m) => {
     const e = prep(JSON.parse(m.data)); if (e.test || all.some((x) => x.id === e.id)) return;
@@ -404,13 +413,13 @@ async function startLive() {
 }
 
 async function startReplay() {
-  setConn("off", "回放");
+  setConn("off", t("conn.replay"));
   await loadRoster(); await syncSlots();
   try { all = (await (await fetch("/api/events")).json()).filter((e) => !e.test).map(prep).sort(sortT); } catch { all = []; }
   applyDefaults();
   const days = [...new Set(all.map((e) => dayOf(e._t)))].sort().reverse();
   const sel = $("#day");
-  sel.innerHTML = days.length ? days.map((d) => `<option value="${d}">${Number(d.slice(5, 7))} 月 ${Number(d.slice(8))} 日</option>`).join("") : `<option>没有记录</option>`;
+  sel.innerHTML = days.length ? days.map((d) => `<option value="${d}">${fmtDate.format(Date.parse(d + "T12:00:00Z"))}</option>`).join("") : `<option>${t("noDays")}</option>`;
   sel.onchange = () => loadDay(sel.value);
   if (days.length) loadDay(days[0]);
 }
@@ -435,7 +444,7 @@ function tick(now) {
   raf = requestAnimationFrame(tick);
 }
 $("#scrub").oninput = (e) => mode === "replay" && seek(rpStart + (Number(e.target.value) / 1000) * (rpEnd - rpStart));
-function syncPlay() { const b = $("#play"); b.textContent = playing ? "暂停" : "播放"; b.setAttribute("aria-label", b.textContent); }
+function syncPlay() { const b = $("#play"); b.textContent = playing ? t("pause") : t("play"); b.setAttribute("aria-label", b.textContent); }
 $("#play").onclick = () => { playing = !playing; if (playing && vnow >= rpEnd) seek(rpStart); last = performance.now(); syncPlay(); };
 
 let booted = false;

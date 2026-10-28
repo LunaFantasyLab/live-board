@@ -1,5 +1,7 @@
 # 从源码安装（DIY）
 
+**简体中文** | [English](DIY.en.md)
+
 ## Mac App
 
 前提：

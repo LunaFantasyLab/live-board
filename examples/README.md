@@ -3,6 +3,7 @@
 | 文件 | 放到哪里 | 说明 |
 |---|---|---|
 | `roster.example.json` | 写入端：`~/.liveboard/roster.json`（`init` 时没有名单会自动复制这份） | 名单：看板标题、流程步骤、成员 |
+| `roster.example.en.json` | 同上（英文终端 `init` 时复制这份） | 英文示例名单 / English example roster, copied by `init` when the writer runs in English |
 | `events.example.jsonl` | 只用来看格式 | 事件格式示例：平时用 `liveboard.py ev` 打卡，不用手写 |
 | `app-config.example.json` | Mac：`~/Library/Application Support/LiveBoard/config.json` | 设置向导会自动写；一般不用手改。`timezone` 可省略（默认按本机时区） |
 

@@ -10,6 +10,8 @@
 // - 存放位置：~/Library/Application Support/LiveBoard/
 //     notion_token（连接密钥，600 权限）  config.json（表 ID 等，不是密钥）
 // - 登录 Mac 时自动打开：用系统的「登录项」（SMAppService，macOS 13+），菜单里可以开关。
+// - 界面语言：跟随系统 / 简体中文 / English（Lang.swift）。菜单「语言」或向导右上角切换，当场生效，不用重启；
+//   网页通过 window.__LIVEBOARD_LANG 拿到语言。文字表在 Contents/Resources/<语言>.lproj/Localizable.strings。
 import AppKit
 import WebKit
 import ObjectiveC
@@ -121,18 +123,24 @@ final class NotionBridge: NSObject, WKScriptMessageHandlerWithReply {
 }
 
 // MARK: - 设置向导用的通道
-// op: state / token / notion / choose / open / copy / finish。密钥先只放在内存里（pending），点「打开看板」时才写进文件。
+// op: state / token / notion / choose / open / copy / lang / finish。密钥先只放在内存里（pending），点「打开看板」时才写进文件。
 final class SetupBridge: NSObject, WKScriptMessageHandlerWithReply {
     var pending: String?
     var scope = SetupScope()
     var onFinish: (() -> Void)?
+    var onLanguage: (() -> Void)?
 
     func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping (Any?, String?) -> Void) {
         guard let m = message.body as? [String: Any], let op = m["op"] as? String else { return replyHandler(["ok": false], nil) }
         switch op {
         case "state":
-            replyHandler(["ok": true, "hasToken": Store.token() != nil, "configured": Store.isConfigured], nil)
+            replyHandler(["ok": true, "hasToken": Store.token() != nil, "configured": Store.isConfigured, "language": L10n.preference, "lang": L10n.web], nil)
+        case "lang":
+            // 向导右上角换语言：存下来，回传网页该用的语言；菜单、看板跟着换
+            L10n.preference = (m["value"] as? String) ?? "system"
+            replyHandler(["ok": true, "language": L10n.preference, "lang": L10n.web], nil)
+            DispatchQueue.main.async { self.onLanguage?() }
         case "token":
             if (m["useSaved"] as? Bool) == true {
                 pending = nil
@@ -168,7 +176,7 @@ final class SetupBridge: NSObject, WKScriptMessageHandlerWithReply {
             DispatchQueue.main.asyncAfter(deadline: .now() + 60) { if pb.changeCount == stamp { pb.clearContents() } }
             replyHandler(["ok": true], nil)
         case "finish":
-            guard scope.canFinish((m["database_id"] as? String) ?? "") else { return replyHandler(["ok": false, "error": "这张表不是这次设置里选的"], nil) }
+            guard scope.canFinish((m["database_id"] as? String) ?? "") else { return replyHandler(["ok": false, "error": L("err.notThisTable")], nil) }
             if let err = Store.commitSetup(pending: pending, databaseID: (m["database_id"] as? String) ?? "") { return replyHandler(["ok": false, "error": err], nil) }
             pending = nil
             replyHandler(["ok": true], nil)
@@ -208,7 +216,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         web = WKWebView(frame: NSRect(x: 0, y: 0, width: 680, height: 620), configuration: cfg)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 620), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         super.init()
-        window.title = "设置实时看板"
+        window.title = L("setup.title")
         window.isReleasedWhenClosed = false
         window.contentView = web
         window.delegate = self
@@ -216,8 +224,16 @@ final class SetupWindow: NSObject, NSWindowDelegate {
         web.uiDelegate = links
         bridge.onFinish = { [weak self] in self?.window.close(); onFinish() }
     }
+    /// 页面加载前告诉向导用哪种语言
+    func injectLang() {
+        let ucc = web.configuration.userContentController
+        ucc.removeAllUserScripts()
+        ucc.addUserScript(WKUserScript(source: "window.__LIVEBOARD_LANG = \"\(L10n.web)\";", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        window.title = L("setup.title")
+    }
     func show() {
         bridge.pending = nil; bridge.scope = SetupScope()
+        injectLang()
         web.load(URLRequest(url: kSetup, cachePolicy: .reloadIgnoringLocalCacheData))
         window.center()
         NSApp.activate(ignoringOtherApps: true)
@@ -274,7 +290,7 @@ final class BoardViewController: NSViewController, WKNavigationDelegate, WKUIDel
         let tz = (c["timezone"] as? String) ?? ""
         if !tz.isEmpty, TimeZone(identifier: tz) != nil { cfg["timezone"] = tz }
         guard let d = try? JSONSerialization.data(withJSONObject: cfg), let js = String(data: d, encoding: .utf8) else { return }
-        var src = "window.__LIVEBOARD_CFG = \(js);"
+        var src = "window.__LIVEBOARD_CFG = \(js); window.__LIVEBOARD_LANG = \"\(L10n.web)\";"
         if cfg["timezone"] != nil { src += " window.__LIVEBOARD_TZ = window.__LIVEBOARD_CFG.timezone;" }
         ucc.addUserScript(WKUserScript(source: src, injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
@@ -282,7 +298,7 @@ final class BoardViewController: NSViewController, WKNavigationDelegate, WKUIDel
     func load() {
         guard Store.isConfigured else {
             web.isHidden = true
-            notice.stringValue = "还没设置：右键菜单栏图标 →「重新设置…」"
+            notice.stringValue = L("notice.notSetUp")
             notice.isHidden = false
             lastLoadFailed = true
             return
@@ -309,10 +325,10 @@ final class BoardViewController: NSViewController, WKNavigationDelegate, WKUIDel
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { lastLoadFailed = false }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        if (error as NSError).code != NSURLErrorCancelled { showError("看板页面打不开，请右键 →「刷新」") }
+        if (error as NSError).code != NSURLErrorCancelled { showError(L("notice.loadFailed")) }
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        if (error as NSError).code != NSURLErrorCancelled { showError("看板页面打不开，请右键 →「刷新」") }
+        if (error as NSError).code != NSURLErrorCancelled { showError(L("notice.loadFailed")) }
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { load() }
 }
@@ -333,11 +349,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
     let board = BoardViewController(nibName: nil, bundle: nil)
     let menu = NSMenu()
     var loginItem: NSMenuItem!
-    lazy var setup = SetupWindow { [weak self] in
-        guard let self = self else { return }
-        self.board.load()
-        self.showPopover()
-    }
+    var langItems: [NSMenuItem] = []
+    lazy var setup: SetupWindow = {
+        let w = SetupWindow { [weak self] in
+            guard let self = self else { return }
+            self.board.load()
+            self.showPopover()
+        }
+        w.bridge.onLanguage = { [weak self] in self?.languageChanged(fromSetup: true) }
+        return w
+    }()
 
     func applicationDidFinishLaunching(_ n: Notification) {
         // 卸载脚本用：取消登录时自动打开后直接退出
@@ -351,7 +372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let b = item.button {
             b.image = Self.icon()
-            b.toolTip = "实时看板"
+            b.toolTip = L("app.name")
             b.target = self
             b.action = #selector(clicked(_:))
             b.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -362,12 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         popover.contentViewController = board
         popover.contentSize = popupSize(for: NSScreen.main)
 
-        menu.addItem(withTitle: "刷新", action: #selector(reload), keyEquivalent: "r")
-        menu.addItem(withTitle: "重新设置…", action: #selector(openSetup), keyEquivalent: ",")
-        loginItem = menu.addItem(withTitle: "登录时自动打开", action: #selector(toggleLogin), keyEquivalent: "")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q")
-        menu.items.forEach { $0.target = self }
+        buildMenu()
         menu.delegate = self
 
         // 第一次打开：默认设成登录时自动打开（之后以菜单里的开关为准）
@@ -395,24 +411,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         }
     }
 
+    /// 右键菜单。换语言时整个重建
+    func buildMenu() {
+        menu.removeAllItems()
+        menu.addItem(withTitle: L("menu.refresh"), action: #selector(reload), keyEquivalent: "r")
+        menu.addItem(withTitle: L("menu.setup"), action: #selector(openSetup), keyEquivalent: ",")
+        loginItem = menu.addItem(withTitle: L("menu.login"), action: #selector(toggleLogin), keyEquivalent: "")
+        let langItem = menu.addItem(withTitle: L("menu.language"), action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        langItems = zip(L10n.choices, [L("lang.system"), "简体中文", "English"]).map { code, title in
+            let it = sub.addItem(withTitle: title, action: #selector(chooseLanguage(_:)), keyEquivalent: "")
+            it.representedObject = code; it.target = self
+            return it
+        }
+        langItem.submenu = sub
+        menu.addItem(.separator())
+        menu.addItem(withTitle: L("menu.about"), action: #selector(about), keyEquivalent: "")
+        menu.addItem(withTitle: L("menu.quit"), action: #selector(quit), keyEquivalent: "q")
+        menu.items.forEach { if $0.action != nil { $0.target = self } }
+    }
+
+    @objc func chooseLanguage(_ sender: NSMenuItem) {
+        guard let code = sender.representedObject as? String, code != L10n.preference else { return }
+        L10n.preference = code
+        languageChanged(fromSetup: false)
+    }
+
+    /// 换了语言：菜单、提示、设置窗口和看板都当场换，不用重启
+    func languageChanged(fromSetup: Bool) {
+        buildMenu()
+        installEditMenu()
+        item.button?.toolTip = L("app.name")
+        board.load()
+        setup.injectLang()
+        if !fromSetup, setup.window.isVisible {   // 向导开着：就地换文字，已填的内容不丢
+            setup.web.evaluateJavaScript("window.__lbSetLang && window.__lbSetLang(\"\(L10n.web)\")", completionHandler: nil)
+        }
+    }
+
+    @objc func about() {
+        let v = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
+        let credits = NSAttributedString(string: L("about.credits", v), attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.labelColor])
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: L("app.name"), .credits: credits, .version: ""])
+    }
+
     /// 菜单栏小程序没有菜单栏菜单，⌘C / ⌘V / ⌘A 要靠这个「编辑」菜单才能在输入框里用
     func installEditMenu() {
         let main = NSMenu(), appItem = NSMenuItem(), editItem = NSMenuItem()
         main.addItem(appItem); main.addItem(editItem)
-        let appMenu = NSMenu(); appMenu.addItem(withTitle: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu
-        let edit = NSMenu(title: "编辑")
-        edit.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
-        edit.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        let appMenu = NSMenu(); appMenu.addItem(withTitle: L("menu.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu
+        let edit = NSMenu(title: L("edit.title"))
+        edit.addItem(withTitle: L("edit.undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: L("edit.redo"), action: Selector(("redo:")), keyEquivalent: "Z")
         edit.addItem(.separator())
-        edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        edit.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        edit.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        edit.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(withTitle: L("edit.cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: L("edit.copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: L("edit.paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: L("edit.selectAll"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = edit
         NSApp.mainMenu = main
     }
 
-    func menuWillOpen(_ menu: NSMenu) { loginItem.state = LoginItem.enabled ? .on : .off }
+    func menuWillOpen(_ menu: NSMenu) {
+        loginItem.state = LoginItem.enabled ? .on : .off
+        langItems.forEach { $0.state = ($0.representedObject as? String) == L10n.preference ? .on : .off }
+    }
 
     func fitPopover(to screen: NSScreen?) {
         let size = popupSize(for: screen)
@@ -421,7 +485,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
     }
 
     static func icon() -> NSImage {
-        let img = NSImage(systemSymbolName: "cube", accessibilityDescription: "实时看板")
+        let img = NSImage(systemSymbolName: "cube", accessibilityDescription: L("app.name"))
             ?? NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
                 let p = NSBezierPath(); p.lineWidth = 1.4
                 p.move(to: NSPoint(x: 9, y: 16)); p.line(to: NSPoint(x: 16, y: 12.5)); p.line(to: NSPoint(x: 16, y: 5.5))
@@ -467,9 +531,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         LoginItem.set(want)
         if want && !LoginItem.enabled {
             let a = NSAlert()
-            a.messageText = "需要你在系统设置里允许一下"
-            a.informativeText = "打开「系统设置 → 通用 → 登录项与扩展」，在「登录时打开」里允许「实时看板」。"
-            a.addButton(withTitle: "打开系统设置"); a.addButton(withTitle: "取消")
+            a.messageText = L("login.title")
+            a.informativeText = L("login.body")
+            a.addButton(withTitle: L("login.open")); a.addButton(withTitle: L("login.cancel"))
             NSApp.activate(ignoringOtherApps: true)
             if a.runModal() == .alertFirstButtonReturn { SMAppService.openSystemSettingsLoginItems() }
         }

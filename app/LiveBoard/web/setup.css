@@ -33,3 +33,6 @@ pre { background: #fff; border: 2px solid var(--ink); padding: 8px 10px; white-s
 .pages li[aria-checked="true"] { background: var(--ink); color: var(--paper); }
 details { margin-top: 18px; border-top: 1px dashed var(--mute); padding-top: 10px; }
 summary { cursor: pointer; font-weight: 600; }
+.head-r { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.lang { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 600; }
+.lang select { font: inherit; font-weight: 400; padding: 2px 4px; border: 2px solid var(--ink); background: #fff; }

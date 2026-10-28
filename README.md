@@ -1,4 +1,6 @@
-# 实时看板（LiveBoard）
+# 实时看板（Live Board）
+
+[English](README.en.md) | **简体中文**
 
 一个 Mac 菜单栏小工具：点一下菜单栏里的小立方体，就能看到团队里每个成员（人或自动化程序都行）**此刻在做什么**——谁在工作、谁空闲、谁在等你确认、任务走到了第几步。
 
@@ -14,7 +16,15 @@
 
 红黑漫画风的小办公室：谁在干活就坐在工位上忙，交接时任务卡会飞到下一位手里；没人动的时候背景红条纹慢慢呼吸；右侧是人数、任务进度，点「更多」能看每个成员在做什么。
 
-> English summary is at the [bottom](#english).
+## 语言
+
+App、看板和设置窗口都有 **简体中文** 和 **English** 两种界面。
+
+- 默认跟随 macOS 系统语言（系统是中文就显示中文，其他语言显示英文）。
+- 手动切换：右键点菜单栏小立方体（或按住 Control 点）→「语言（Language）」→「跟随系统 / 简体中文 / English」；设置窗口右上角也能选。当场生效，会记住。
+- 访达和登录项里的 App 名字跟随系统语言：中文系统叫「实时看板」，英文系统叫「Live Board」。
+- 你自己的数据（成员名、任务名、消息）原样显示，不翻译。
+- 写入端按 `LANG`（或 `LIVEBOARD_LANG`）选提示语言；任何命令加 `--lang zh` / `--lang en` 可以指定。
 
 ## 它是怎么工作的
 
@@ -81,7 +91,7 @@ python3 liveboard.py ev 完成   --bot 审核员 --project 周报 --msg "已发�
 - 6 个工位：默认按最近有动态的成员排；点工位上的人可以从「替补席」换人，换人结果存在写入端，所有 Mac 看到的一样。
 - 顶部：工作中 / 空闲 / 待你确认 的人数；当前任务走到第几步。
 - 「最近动态」：按时间倒序的打卡记录；「更多」里可以按天回放。
-- 右键菜单：刷新、重新设置…、登录时自动打开（默认开）、退出。
+- 右键菜单：刷新、重新设置…、登录时自动打开（默认开）、语言、关于、退出。
 
 ## 隐私与安全
 
@@ -100,15 +110,16 @@ python3 liveboard.py ev 完成   --bot 审核员 --project 周报 --msg "已发�
 | `scripts/` | 打包脚本（`build-app.sh`） |
 | `tests/` | 测试：假 Notion、写入端测试、浏览器端到端测试、Swift 规则测试 |
 | `examples/` | 示例名单、事件、设置 |
-| `docs/` | [DIY 安装](docs/DIY.md)、[数据格式与 Notion 协议](docs/PROTOCOL.md) |
+| `docs/` | [DIY 安装](docs/DIY.md)、[数据格式与 Notion 协议](docs/PROTOCOL.md)、[素材来源](docs/ASSETS.md)（英文版：`*.en.md`） |
 
 ## 开发与测试
 
 ```bash
 cd board && npm ci && npm run dev                 # 看板网页开发（配合 writer/liveboard.py serve 提供本机数据）
 python3 tests/test_writer.py -v                   # 写入端测试（用本机假 Notion）
+python3 tests/test_i18n.py -v                     # 中英文字符表、文档检查
 bash scripts/build-app.sh --stage-only && python3 tests/e2e.py   # 浏览器端到端测试（需要 Python Playwright）
-swiftc app/LiveBoard/Policy.swift app/LiveBoard/Store.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests   # 原生层放行规则、密钥保存测试
+swiftc app/LiveBoard/Policy.swift app/LiveBoard/Store.swift app/LiveBoard/Lang.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests   # 原生层放行规则、密钥保存测试
 ```
 
 ## 许可
@@ -121,29 +132,3 @@ Copyright (c) 2026 Luna Fantasy Lab. All rights reserved except as granted under
 - **商业授权**：任何商业使用，须事先获得 Luna Fantasy Lab 的书面商业授权。请通过 GitHub 联系 [@LunaFantasyLab](https://github.com/LunaFantasyLab)（仓库 Issues 或主页）。
 - 第三方组件沿用各自的许可（three.js：MIT；Anton 字体：SIL OFL 1.1），详见 [NOTICE](NOTICE)；素材来源见 [docs/ASSETS.md](docs/ASSETS.md)。
 
----
-
-## English
-
-![LiveBoard in action](docs/images/board.gif)
-
-**LiveBoard** is a macOS menu-bar app that shows what each member of a team (people or automated agents) is doing right now: who is working, who is idle, who is waiting for your confirmation, and which step a task is at.
-
-Data lives in **your own Notion workspace**: a small Python CLI (`writer/liveboard.py`, stdlib only) records check-in events locally and syncs them to a Notion database; the Mac app polls that database. No server, no tunnels, no open ports.
-
-- **Install**: download the `.dmg` from [Releases](https://github.com/LunaFantasyLab/live-board/releases/latest) and drag the app to Applications (the app is not notarized: approve it once in *System Settings → Privacy & Security → Open Anyway*), or build from source with `安装.command` (needs Xcode Command Line Tools and Node.js 18+).
-- **First launch**: a three-step setup window asks for a Notion internal integration token (verified on the spot), lets you pick a shared page, and creates the relay page and the `看板数据` database for you.
-- **Writer**: `python3 writer/liveboard.py init --database <id>`, then `liveboard.py sync` (keep it running) and `liveboard.py ev <type> --bot <name> --msg "..."` to check in.
-- **Security**: the token is stored with mode 600 and never exposed to the web view; the native layer only allows a fixed set of Notion API calls.
-- Screenshots: [working](docs/images/working.png) · [all idle](docs/images/idle.png) · [member details](docs/images/detail.png) · [HD video (MP4)](docs/images/board.mp4).
-- Protocol and data formats: [docs/PROTOCOL.md](docs/PROTOCOL.md).
-
-### License
-
-Copyright (c) 2026 Luna Fantasy Lab. All rights reserved except as granted under CC BY-NC 4.0.
-
-The source code is publicly available free of charge, but this is not OSI-approved open-source software: free use and modification are allowed, commercial use is not.
-
-- **Free edition**: licensed under [CC BY-NC 4.0 (Attribution-NonCommercial 4.0 International)](https://creativecommons.org/licenses/by-nc/4.0/); full text in [LICENSE](LICENSE). Free to use and modify; you must credit **Luna Fantasy Lab** with a link to <https://github.com/LunaFantasyLab/live-board>; **no commercial use**.
-- **Commercial license**: any commercial use requires prior written commercial permission from Luna Fantasy Lab. Contact [@LunaFantasyLab](https://github.com/LunaFantasyLab) on GitHub (repository Issues or profile page).
-- Third-party components keep their own licenses (three.js: MIT; Anton font: SIL OFL 1.1); see [NOTICE](NOTICE); asset provenance in [docs/ASSETS.md](docs/ASSETS.md).

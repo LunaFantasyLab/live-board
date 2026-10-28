@@ -64,14 +64,14 @@ enum Store {
     /// 设置向导点「完成」：先写设置，再提交密钥；密钥存不进去就把设置退回原样。
     /// 返回 nil 表示成功，否则是给人看的错误。
     static func commitSetup(pending: String?, databaseID: String) -> String? {
-        guard let id = normID(databaseID) else { return "表 ID 不对" }
-        guard pending != nil || token() != nil else { return "还没有密钥" }
+        guard let id = normID(databaseID) else { return L("err.badTable") }
+        guard pending != nil || token() != nil else { return L("err.noToken") }
         let before = try? Data(contentsOf: configFile)
         var c = config(); c["database_id"] = id
-        guard saveConfig(c) else { return "设置没存进去" }
+        guard saveConfig(c) else { return L("err.saveConfig") }
         if let t = pending, !saveToken(t) {
             if let d = before { try? d.write(to: configFile, options: .atomic) } else { try? FileManager.default.removeItem(at: configFile) }
-            return "密钥没存进去"
+            return L("err.saveToken")
         }
         return nil
     }

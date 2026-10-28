@@ -10,6 +10,7 @@
 // 减少动态（系统设置）：全部静止，只在数据变化时重画一帧。
 // ?debug：右下角显示 fps / 每帧 CPU 毫秒 / 绘制次数，并暴露 window.__boardScene 给自测脚本。
 import * as THREE from "three";
+import { t as tr } from "./i18n.js";   // 场景里 t 是动画时间，翻译函数改叫 tr
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
@@ -535,7 +536,7 @@ export async function createScene(host, roster, { onPick, model, slots, labelOf 
     fpsN++; fpsAcc += dt;
     if (now - fpsT > 500) {
       stats.fps = Math.round((fpsN * 1000) / (now - fpsT)); const cpu = cpuAcc / fpsN;
-      if (meter) meter.textContent = `${stats.fps} fps · CPU ${cpu.toFixed(2)} ms/帧 · ${stats.calls} 次绘制 · DPR ${dpr}`;
+      if (meter) meter.textContent = tr("meter", { fps: stats.fps, cpu: cpu.toFixed(2), calls: stats.calls, dpr });
       if (!reduce && !Q.has("dpr")) {
         slow = stats.fps < 50 && dpr > 1.25 ? slow + 1 : 0;
         if (slow >= 6) { dpr = dpr > 1.5 ? 1.5 : 1.25; renderer.setPixelRatio(dpr); renderer.setSize(W, H, false); stats.dpr = dpr; slow = 0; dirty = true; }

@@ -5,6 +5,7 @@
 // 写：换人只写一行「换人 / 待处理」，写入端（writer/liveboard.py sync）读到后改 state/slots.json，再把新工位行写回来。
 // Notion 请求经 App 原生层发出（window.webkit.messageHandlers.notion），密钥只在原生层，网页拿不到。
 // 设置（表 ID 等）由原生层在页面加载前注入到 window.__LIVEBOARD_CFG。
+// 提示文字在 i18n.js（简体中文 / English，跟着 window.__LIVEBOARD_LANG 或系统语言）。
 (() => {
   "use strict";
   const CFG = window.__LIVEBOARD_CFG || {};
@@ -78,10 +79,11 @@
     let j = {}; try { j = await r.json(); } catch { /* 非 JSON */ }
     return { status: r.status, json: j };
   }
-  const WHY = { 401: "还没连上数据：连接密钥不对", 403: "还没连上数据：这个连接没有权限", 404: "还没连上数据：Notion 里的看板中转页还没加上连接" };
+  const I = window.__LB_I18N, T = (k, v) => (I ? I.t(k, v) : k);
+  const WHY = { 401: () => T("r.401"), 403: () => T("r.403"), 404: () => T("r.404") };
   function whyOf(r) {
-    if (r.json && r.json.code === "no_token") return "还没连上数据：还没填连接密钥";
-    return WHY[r.status] || (r.status === 0 ? "连不上 Notion，正在重试" : `Notion 暂时出错（${r.status}），正在重试`);
+    if (r.json && r.json.code === "no_token") return T("r.noToken");
+    return WHY[r.status] ? WHY[r.status]() : (r.status === 0 ? T("r.offline") : T("r.error", { status: r.status }));
   }
   const text = (p) => ((p && (p.rich_text || p.title)) || []).map((x) => x.plain_text ?? (x.text && x.text.content) ?? "").join("");
 
@@ -170,13 +172,13 @@
     if (st.pending) { st.pending = null; st.stale = true; notice(pendingNote()); }
     return st.slots;
   }
-  function pendingNote() { return st.stale ? "换人还没生效：写入端（liveboard.py sync）好像没在运行" : ""; }
+  function pendingNote() { return st.stale ? T("r.pending") : ""; }
   const BY_TXT = { default: "默认（按最近动态，第一次存下后固定）", local: "沿用这台设备原来的选择", manual: "手动替换" };
   async function putSlots(o) {
     await whenReady();
     const a = o && o.slots, ok = new Set(((st.roster && st.roster.bots) || []).map((b) => b.name));
     if (!Array.isArray(a) || a.length !== SLOT_N || a.some((n) => typeof n !== "string" || !ok.has(n)) || new Set(a).size !== SLOT_N)
-      return jres(400, { error: `slots 要是 ${SLOT_N} 个不重复、名单里有的名字` });
+      return jres(400, { error: T("r.badSlots", { n: SLOT_N }) });
     const cur = curSlots();
     if (o.ifEmpty && cur) return jres(200, { ...cur, kept: true });
     const rec = { slots: a.slice(), updatedAt: new Date().toISOString(), by: BY_TXT[o.reason] || (o.ifEmpty ? BY_TXT.default : BY_TXT.manual) };
@@ -217,6 +219,6 @@
   window.EventSource = function (url, opts) { return String(url).startsWith("/api/stream") ? new RelayStream(url) : new RealES(url, opts); };
 
   window.__relay = { refresh, setActive, stats, state: st };
-  if (!DB) { notice("还没连上数据：缺少看板中转表的设置"); return; }
+  if (!DB) { notice(T("r.noDb")); return; }
   refresh();
 })();

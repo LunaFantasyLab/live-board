@@ -2,8 +2,9 @@
 """自测用：在浏览器里扮演 Mac App 的原生层（规则照 app/LiveBoard/Policy.swift 和 main.swift）。
 - 提供组装好的网页资源（scripts/build-app.sh --stage-only 生成的 dist/stage/board，和 App 里的一模一样）
 - index.html 加载前注入 window.__LIVEBOARD_CFG（App 里由 WKUserScript 注入）
+- 界面语言（照 Lang.swift）：选了简体中文 / English 时，index.html 和 setup.html 加载前注入 window.__LIVEBOARD_LANG；跟随系统时不注入，网页按浏览器语言
 - /__notion/*：看板通道，只放行「查这张表」「在这张表里加换人行」，密钥由这里加，网页拿不到
-- /__setup：设置向导通道（op: state / token / notion / choose / open / copy / finish），notion 只放行这次向导用到的页面 / 表，finish 后把密钥和表 ID 存进 HARNESS_HOME
+- /__setup：设置向导通道（op: state / token / notion / choose / open / copy / lang / finish），notion 只放行这次向导用到的页面 / 表，finish 后把密钥和表 ID 存进 HARNESS_HOME
 用法：python3 app_harness.py <端口> <网页目录>
 环境变量：HARNESS_API（Notion 地址）、HARNESS_HOME（模拟 ~/Library/Application Support/LiveBoard）、HARNESS_PENDING_TTL_MS（可选）
 """
@@ -16,7 +17,11 @@ TYPES = {".js": "text/javascript", ".css": "text/css", ".html": "text/html; char
          ".woff2": "font/woff2", ".woff": "font/woff", ".json": "application/json"}
 os.makedirs(HOME, exist_ok=True)
 pending = {"token": None}
-calls = {"open": [], "copy": []}
+calls = {"open": [], "copy": [], "lang": "system"}
+WEB_LANG = {"zh-Hans": "zh", "en": "en"}
+ERR = {"表 ID 不对": "Invalid table ID", "这张表不是这次设置里选的": "This table wasn't chosen in this setup", "还没有密钥": "No token yet",
+       "设置没存进去": "Couldn't save the settings", "密钥没存进去": "Couldn't save the token"}
+def err(zh): return ERR[zh] if calls["lang"] == "en" else zh
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 def norm(s):
     h = str(s or "").replace("-", "").lower()
@@ -107,6 +112,8 @@ class H(BaseHTTPRequestHandler):
             if os.environ.get("HARNESS_PENDING_TTL_MS"): c["pending_ttl_ms"] = int(os.environ["HARNESS_PENDING_TTL_MS"])
             inj = f"<script>window.__LIVEBOARD_CFG = {json.dumps(c)};</script>\n".encode()
             data = data.replace(b"<head>", b"<head>\n" + inj, 1)
+        if p in ("/index.html", "/setup.html") and calls["lang"] in WEB_LANG:
+            data = data.replace(b"<head>", b"<head>\n" + f"<script>window.__LIVEBOARD_LANG = {json.dumps(WEB_LANG[calls['lang']])};</script>\n".encode(), 1)
         self.send(200, data, TYPES.get(os.path.splitext(f)[1], "application/octet-stream"))
     def board(self, m):
         body = self.body(); p = self.path[len("/__notion"):]
@@ -118,7 +125,10 @@ class H(BaseHTTPRequestHandler):
         try: o = json.loads(self.body())
         except ValueError: return self.send(400, {"ok": False})
         op = o.get("op")
-        if op == "state": return self.send(200, {"ok": True, "hasToken": token() is not None, "configured": bool(db() and token())})
+        if op == "state": return self.send(200, {"ok": True, "hasToken": token() is not None, "configured": bool(db() and token()), "language": calls["lang"]})
+        if op == "lang":   # 照 L10n.preference：不认识的值当跟随系统；回传网页该用的语言（跟随系统时由网页自己看浏览器语言）
+            v = o.get("value"); calls["lang"] = v if v in WEB_LANG else "system"
+            return self.send(200, {"ok": True, "language": calls["lang"], "lang": WEB_LANG.get(calls["lang"])})
         if op == "token":
             if o.get("useSaved"): pending["token"] = None; return self.send(200, {"ok": token() is not None})
             t = str(o.get("token") or "").strip(); ok = bool(t) and len(t) < 300 and not re.search(r"\s", t)
@@ -139,18 +149,18 @@ class H(BaseHTTPRequestHandler):
         if op == "copy": calls["copy"].append(o.get("text")); return self.send(200, {"ok": True})
         if op == "finish":   # 照 Store.commitSetup：先写设置，再提交密钥，密钥存不进去就退回设置
             d = norm(o.get("database_id"))
-            if not d: return self.send(200, {"ok": False, "error": "表 ID 不对"})
-            if d != scope["table"]: return self.send(200, {"ok": False, "error": "这张表不是这次设置里选的"})
-            if not (pending["token"] or token()): return self.send(200, {"ok": False, "error": "还没有密钥"})
+            if not d: return self.send(200, {"ok": False, "error": err("表 ID 不对")})
+            if d != scope["table"]: return self.send(200, {"ok": False, "error": err("这张表不是这次设置里选的")})
+            if not (pending["token"] or token()): return self.send(200, {"ok": False, "error": err("还没有密钥")})
             cf = os.path.join(HOME, "config.json")
             try: before = open(cf, "rb").read()
             except OSError: before = None
             c = cfg(); c["database_id"] = d
-            if not write_secret(cf, json.dumps(c)): return self.send(200, {"ok": False, "error": "设置没存进去"})
+            if not write_secret(cf, json.dumps(c)): return self.send(200, {"ok": False, "error": err("设置没存进去")})
             if pending["token"] and not write_secret(os.path.join(HOME, "notion_token"), pending["token"] + "\n"):
                 if before is None: os.unlink(cf)
                 else: write_secret(cf, before.decode())
-                return self.send(200, {"ok": False, "error": "密钥没存进去"})
+                return self.send(200, {"ok": False, "error": err("密钥没存进去")})
             pending["token"] = None
             return self.send(200, {"ok": True})
         self.send(200, {"ok": False})

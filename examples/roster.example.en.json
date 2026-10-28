@@ -1,0 +1,14 @@
+{
+  "title": "Example team",
+  "stages": ["Topic", "Draft", "Art", "Edit", "Review", "Publish"],
+  "bots": [
+    { "name": "Dispatch", "short": "Dispatch", "seal": "D" },
+    { "name": "Researcher", "short": "Research", "seal": "R", "stage": 0 },
+    { "name": "Writer", "short": "Writer", "seal": "W", "stage": 1 },
+    { "name": "Artist", "short": "Artist", "seal": "A", "stage": 2 },
+    { "name": "Editor", "short": "Editor", "seal": "E", "stage": 3 },
+    { "name": "Reviewer", "short": "Review", "seal": "V", "stage": 4 },
+    { "name": "Publisher", "short": "Publish", "seal": "P", "stage": 5 },
+    { "name": "Analyst", "short": "Data", "seal": "N" }
+  ]
+}

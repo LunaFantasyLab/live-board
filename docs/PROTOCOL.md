@@ -1,5 +1,7 @@
 # 数据格式与 Notion 协议
 
+**简体中文** | [English](PROTOCOL.en.md)
+
 写入端和 Mac App 之间只通过你 Notion 里的一张表「看板数据」交换数据。双方都只用 Notion 公开 API（`Notion-Version: 2022-06-28`）。
 
 ## 「看板数据」表

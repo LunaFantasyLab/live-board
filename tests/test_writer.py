@@ -64,6 +64,8 @@ class Base(unittest.TestCase):
     def run_cli(self, *args, stdin=None, env=None):
         e = {**os.environ, "LIVEBOARD_HOME": self.home, "NOTION_API_BASE": self.api, "LIVEBOARD_MIN_GAP": "0.36"}
         e.pop("LIVEBOARD_NOTION_TOKEN", None)
+        for k in ("LIVEBOARD_LANG", "LC_ALL", "LC_MESSAGES"): e.pop(k, None)
+        e["LANG"] = "zh_CN.UTF-8"   # 默认按中文终端跑；语言相关的测试自己覆盖
         e.update(env or {})
         return subprocess.run([sys.executable, CLI, *args], input=stdin, capture_output=True, text=True, env=e, timeout=120)
 
@@ -292,6 +294,82 @@ class TestServe(Base):
             self.assertEqual((code, o["slots"], o.get("kept")), (200, names, True))
         finally:
             p.terminate(); p.wait(5)
+
+
+CJK = __import__("re").compile(r"[\u4e00-\u9fff]")
+
+
+class TestLang(Base):
+    """命令行提示的语言：--lang 优先，其次 LIVEBOARD_LANG，再看 LC_ALL / LC_MESSAGES / LANG；没设或 C / POSIX 时用中文"""
+    def setUp(self):
+        super().setUp()
+        shutil.copy(os.path.join(ROOT, "examples", "roster.example.json"), os.path.join(self.home, "roster.json"))
+
+    def test_lang_env_english(self):
+        r = self.run_cli("ev", "nope", "--bot", "调度", "--msg", "x", env={"LANG": "en_US.UTF-8"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("type must be one of", r.stderr)
+        self.assertIn("claim start output", r.stderr)   # 英文下列英文类型名
+
+    def test_lang_default_chinese(self):
+        for lang in ("zh_CN.UTF-8", "C.UTF-8", "C", "POSIX", ""):
+            r = self.run_cli("ev", "nope", "--bot", "调度", "--msg", "x", env={"LANG": lang})
+            self.assertIn("类型只能是", r.stderr, lang)
+
+    def test_lang_flag_overrides_env(self):
+        r = self.run_cli("--lang", "en", "roster", env={"LANG": "zh_CN.UTF-8"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Members:", r.stdout); self.assertIn("Types: claim start", r.stdout)
+        r = self.run_cli("roster", "--lang", "zh", env={"LANG": "en_US.UTF-8"})   # 放在子命令后面也行
+        self.assertIn("成员：", r.stdout)
+        r = self.run_cli("roster", "--lang=en")
+        self.assertIn("Members:", r.stdout)
+        r = self.run_cli("roster", env={"LIVEBOARD_LANG": "en", "LANG": "zh_CN.UTF-8"})
+        self.assertIn("Members:", r.stdout)
+        r = self.run_cli("roster", env={"LC_ALL": "en_GB.UTF-8", "LANG": "zh_CN.UTF-8"})
+        self.assertIn("Members:", r.stdout)
+
+    def test_lang_bad_value(self):
+        r = self.run_cli("--lang", "fr", "roster")
+        self.assertEqual(r.returncode, 2); self.assertIn("--lang", r.stderr)
+
+    def test_lang_missing_value(self):
+        """DS-3：--lang 后面没写值，要说缺值，不要说成值不对"""
+        r = self.run_cli("roster", "--lang")
+        self.assertEqual(r.returncode, 2); self.assertIn("--lang needs a value", r.stderr); self.assertNotIn("got:", r.stderr)
+
+    def test_lang_english_ev_and_log(self):
+        e = {"LANG": "en_US.UTF-8"}
+        r = self.run_cli("ev", "handoff", "--bot", "调度", "--to", "研究员", "--msg", "new task", env=e)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("Logged:"), r.stdout)
+        self.assertIn("handoff", r.stdout)
+        self.assertEqual(self.events()[-1]["type"], "交接")   # 存的数据不变（协议值）
+        r = self.run_cli("ev", "handoff", "--bot", "调度", "--msg", "x", env=e)
+        self.assertIn("needs --to", r.stderr)
+        r = self.run_cli("ev", "start", "--bot", "调度", "--msg", "x", "--source", "checkin", env=e)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_cli("log", env=e)
+        self.assertIn("handoff → 研究员", r.stdout); self.assertIn("[check-in]", r.stdout)
+        self.assertFalse(CJK.search(r.stdout.replace("调度", "").replace("研究员", "")), r.stdout)
+
+    def test_lang_english_help(self):
+        r = self.run_cli("--help", env={"LANG": "en_US.UTF-8"})
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("Live Board writer", r.stdout); self.assertIn("Usage", r.stdout)
+        self.assertFalse(CJK.search(r.stdout), r.stdout[:400])
+        r = self.run_cli("--help")
+        self.assertIn("实时看板写入端", r.stdout)
+
+    def test_lang_english_init_uses_english_example(self):
+        os.remove(os.path.join(self.home, "roster.json"))
+        r = self.run_cli("init", "--token-stdin", stdin=TOKEN + "\n", env={"LANG": "en_US.UTF-8"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Token is valid", r.stdout); self.assertIn("Next:", r.stdout)
+        with open(os.path.join(self.home, "roster.json"), encoding="utf-8") as f: ro = json.load(f)
+        self.assertFalse(CJK.search(json.dumps(ro, ensure_ascii=False)), ro)
+        r = self.run_cli("check", env={"LANG": "en_US.UTF-8"})
+        self.assertIn("Roster:", r.stdout); self.assertFalse(CJK.search(r.stdout), r.stdout)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: python3 tests/test_writer.py -v
+      - run: python3 tests/test_i18n.py -v   # 中英两套界面文字一一对应
   app:
     needs: test
     runs-on: macos-15-intel   # 通用二进制（arm64 + x86_64），Intel 机器排队更短
@@ -22,7 +23,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
       - name: 原生层放行规则测试
-        run: swiftc app/LiveBoard/Policy.swift app/LiveBoard/Store.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests
+        run: swiftc app/LiveBoard/Policy.swift app/LiveBoard/Store.swift app/LiveBoard/Lang.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests
       - name: 打包
         run: |
           V="${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0' }}"

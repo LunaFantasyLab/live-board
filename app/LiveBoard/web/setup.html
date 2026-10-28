@@ -4,66 +4,72 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>设置实时看板</title>
+<title data-i18n="title">设置实时看板</title>
 <link rel="stylesheet" href="setup.css">
+<script src="i18n.js"></script>
 </head>
 <body>
 <main class="wiz">
   <header>
-    <h1>设置实时看板</h1>
-    <ol class="dots" aria-label="进度"><li data-s="1">连接</li><li data-s="2">选位置</li><li data-s="3">完成</li></ol>
+    <h1 data-i18n="title">设置实时看板</h1>
+    <div class="head-r">
+      <label class="lang" for="lang"><span data-i18n="lang.label">语言</span>
+        <select id="lang"><option value="system" data-i18n="lang.system">跟随系统</option><option value="zh-Hans" lang="zh-CN">简体中文</option><option value="en" lang="en">English</option></select>
+      </label>
+      <ol class="dots" aria-label="进度" data-i18n-label="steps"><li data-s="1" data-i18n="dot.1">连接</li><li data-s="2" data-i18n="dot.2">选位置</li><li data-s="3" data-i18n="dot.3">完成</li></ol>
+    </div>
   </header>
 
-  <!-- 第 1 步：密钥 -->
+  <!-- 第 1 步：密钥 / Step 1: token -->
   <section data-step="1">
-    <h2>第 1 步：粘贴 Notion 连接密钥</h2>
+    <h2 data-i18n="s1.h">第 1 步：粘贴 Notion 连接密钥</h2>
     <ol class="how">
-      <li>点下面的按钮，打开 Notion 的「连接」页面，新建一个<b>内部连接</b>（名字随意，比如「实时看板」）。</li>
-      <li>建好后复制它的密钥（以 <code>ntn_</code> 或 <code>secret_</code> 开头），粘贴到下面。</li>
+      <li data-i18n-html="s1.how1">点下面的按钮，打开 Notion 的「连接」页面，新建一个<b>内部连接</b>（名字随意，比如「实时看板」）。</li>
+      <li data-i18n-html="s1.how2">建好后复制它的密钥（以 <code>ntn_</code> 或 <code>secret_</code> 开头），粘贴到下面。</li>
     </ol>
-    <p><button type="button" class="ghost" id="open-integrations">打开 Notion 连接页面</button></p>
-    <label for="token">连接密钥</label>
+    <p><button type="button" class="ghost" id="open-integrations" data-i18n="s1.open">打开 Notion 连接页面</button></p>
+    <label for="token" data-i18n="s1.label">连接密钥</label>
     <div class="row">
-      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴到这里">
-      <button type="button" id="verify">验证</button>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴到这里" data-i18n-placeholder="s1.placeholder">
+      <button type="button" id="verify" data-i18n="s1.verify">验证</button>
     </div>
     <p class="msg" id="msg1" role="status"></p>
-    <p class="keep" id="keep" hidden>这台 Mac 上已经保存过密钥。<button type="button" class="link" id="use-saved">沿用已保存的密钥</button></p>
-    <p class="note">密钥只保存在这台 Mac 上（权限 600 的文件），看板网页读不到它。</p>
+    <p class="keep" id="keep" hidden><span data-i18n="s1.keep">这台 Mac 上已经保存过密钥。</span><button type="button" class="link" id="use-saved" data-i18n="s1.useSaved">沿用已保存的密钥</button></p>
+    <p class="note" data-i18n="s1.note">密钥只保存在这台 Mac 上（权限 600 的文件），看板网页读不到它。</p>
   </section>
 
-  <!-- 第 2 步：选位置 -->
+  <!-- 第 2 步：选位置 / Step 2: location -->
   <section data-step="2" hidden>
-    <h2>第 2 步：选一个 Notion 页面放看板数据</h2>
+    <h2 data-i18n="s2.h">第 2 步：选一个 Notion 页面放看板数据</h2>
     <p class="ok" id="who"></p>
     <ol class="how">
-      <li>在 Notion 里打开一个页面（建议新建一个空页面）。</li>
-      <li>点右上角「⋯」→「连接」，选你刚建的连接。</li>
-      <li>回到这里点「刷新列表」，选中那个页面。</li>
+      <li data-i18n="s2.how1">在 Notion 里打开一个页面（建议新建一个空页面）。</li>
+      <li data-i18n="s2.how2">点右上角「⋯」→「连接」，选你刚建的连接。</li>
+      <li data-i18n="s2.how3">回到这里点「刷新列表」，选中那个页面。</li>
     </ol>
-    <div class="row"><button type="button" class="ghost" id="reload-pages">刷新列表</button></div>
-    <ul class="pages" id="pages" role="radiogroup" aria-label="可用的页面"></ul>
+    <div class="row"><button type="button" class="ghost" id="reload-pages" data-i18n="s2.reload">刷新列表</button></div>
+    <ul class="pages" id="pages" role="radiogroup" aria-label="可用的页面" data-i18n-label="s2.pages"></ul>
     <p class="msg" id="msg2" role="status"></p>
-    <div class="row end"><button type="button" class="ghost" id="back1">上一步</button><button type="button" id="create" disabled>在这个页面里新建看板表</button></div>
+    <div class="row end"><button type="button" class="ghost" id="back1" data-i18n="s2.back">上一步</button><button type="button" id="create" disabled data-i18n="s2.create">在这个页面里新建看板表</button></div>
     <details id="existing">
-      <summary>已经有看板数据表了？</summary>
-      <label for="dbid">表的链接或 ID</label>
-      <div class="row"><input id="dbid" type="text" autocomplete="off" spellcheck="false" placeholder="https://www.notion.so/… 或 32 位 ID"><button type="button" id="use-db">用这张表</button></div>
+      <summary data-i18n="s2.existing">已经有看板数据表了？</summary>
+      <label for="dbid" data-i18n="s2.dbLabel">表的链接或 ID</label>
+      <div class="row"><input id="dbid" type="text" autocomplete="off" spellcheck="false" placeholder="https://www.notion.so/… 或 32 位 ID" data-i18n-placeholder="s2.dbPlaceholder"><button type="button" id="use-db" data-i18n="s2.useDb">用这张表</button></div>
       <p class="msg" id="msg2b" role="status"></p>
     </details>
   </section>
 
-  <!-- 第 3 步：完成 -->
+  <!-- 第 3 步：完成 / Step 3: done -->
   <section data-step="3" hidden>
-    <h2>第 3 步：设置好了</h2>
+    <h2 data-i18n="s3.h">第 3 步：设置好了</h2>
     <p class="ok" id="done-what"></p>
-    <p>看板数据表 ID（不是密钥，可以放心复制）：</p>
+    <p data-i18n="s3.dbid">看板数据表 ID（不是密钥，可以放心复制）：</p>
     <pre id="db-out"></pre>
-    <p>接下来在<b>写入数据的那台电脑</b>上运行一次（会提示你粘贴同一个连接密钥）：</p>
+    <p data-i18n-html="s3.next">接下来在<b>写入数据的那台电脑</b>上运行一次（会提示你粘贴同一个连接密钥）：</p>
     <pre id="cmd-out"></pre>
-    <div class="row"><button type="button" class="ghost" id="copy-cmd">复制这行命令</button></div>
+    <div class="row"><button type="button" class="ghost" id="copy-cmd" data-i18n="s3.copy">复制这行命令</button></div>
     <p class="msg" id="msg3" role="status"></p>
-    <div class="row end"><button type="button" id="finish">打开看板</button></div>
+    <div class="row end"><button type="button" id="finish" data-i18n="s3.finish">打开看板</button></div>
   </section>
 </main>
 <script src="setup.js"></script>
