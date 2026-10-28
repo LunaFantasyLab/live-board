@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
       - name: 原生层放行规则测试
-        run: swiftc app/LiveBoard/Policy.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests
+        run: swiftc app/LiveBoard/Policy.swift app/LiveBoard/Store.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests
       - name: 打包
         run: |
           V="${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0' }}"
