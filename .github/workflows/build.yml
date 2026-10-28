@@ -16,7 +16,7 @@ jobs:
       - run: python3 tests/test_writer.py -v
   app:
     needs: test
-    runs-on: macos-14
+    runs-on: macos-15-intel   # 通用二进制（arm64 + x86_64），Intel 机器排队更短
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
