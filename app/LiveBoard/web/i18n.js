@@ -45,6 +45,8 @@
       "r.404": "还没连上数据：Notion 里的看板中转页还没加上连接", "r.noToken": "还没连上数据：还没填连接密钥",
       "r.offline": "连不上 Notion，正在重试", "r.error": "Notion 暂时出错（{status}），正在重试",
       "r.pending": "换人还没生效：写入端（liveboard.py sync）好像没在运行",
+      "r.pendingAct": "显示状态还没同步到其他设备：写入端好像没在运行（只改显示，不派活）",
+      "r.badAct": "停用名单只能是名单里不重复的名字",
       "r.badSlots": "slots 要是 {n} 个不重复、名单里有的名字", "r.noDb": "还没连上数据：缺少看板中转表的设置",
     },
     en: {
@@ -89,6 +91,8 @@
       "r.404": "Not connected yet: the board relay page in Notion isn't connected to the integration", "r.noToken": "Not connected yet: no integration token has been entered",
       "r.offline": "Can't reach Notion, retrying", "r.error": "Notion error ({status}), retrying",
       "r.pending": "The swap hasn't taken effect: the writer (liveboard.py sync) doesn't seem to be running",
+      "r.pendingAct": "The display choice hasn't synced to other devices: the writer doesn't seem to be running (display only)",
+      "r.badAct": "The hidden list must be distinct names from the roster",
       "r.badSlots": "slots must be {n} distinct names from the roster", "r.noDb": "Not connected yet: the board relay table isn't configured",
     },
   };

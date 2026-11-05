@@ -13,7 +13,7 @@
   const ACTIVE_MS = CFG.active_ms || 3000, IDLE_MS = CFG.idle_ms || 30000, PENDING_MS = 1500;
   const LOOKBACK = 50, CHECK_EVERY = 15 * 60e3, PENDING_TTL = CFG.pending_ttl_ms || 60e3, SLOT_N = 6, KEEP_EVENTS = 5000;
   const CACHE = "liveboard.relay.v1." + DB;
-  const st = { events: new Map(), roster: null, slots: null, seq: { roster: 0, slots: 0 }, lastSeq: 0, ready: false, broken: false, pending: null, lastFull: 0 };
+  const st = { events: new Map(), roster: null, slots: null, activation: { disabled: [] }, seq: { roster: 0, slots: 0, activation: 0 }, lastSeq: 0, ready: false, broken: false, pending: null, pendingActivation: null, lastFull: 0 };
   const stats = { polls: 0, requests: 0, lastOk: 0, lastError: "", newEvents: 0 };
   const origFetch = window.fetch.bind(window);
   const RealES = window.EventSource;
@@ -21,9 +21,10 @@
   // ---------- 本机缓存（只是加快启动；第一次问到 Notion 之前不显示）----------
   try {
     const c = JSON.parse(localStorage.getItem(CACHE) || "null");
-    if (c && c.v === 1) {
+    if (c && (c.v === 1 || c.v === 2)) {
       for (const e of c.events || []) st.events.set(e.id, e);
-      st.roster = c.roster || null; st.slots = c.slots || null; st.seq = c.seqs || st.seq; st.lastSeq = c.lastSeq || 0; st.lastFull = c.lastFull || 0;
+      st.roster = c.roster || null; st.slots = c.slots || null; if (c.activation && Array.isArray(c.activation.disabled)) st.activation = c.activation;
+      st.seq = Object.assign({ roster: 0, slots: 0, activation: 0 }, c.seqs || {}); st.lastSeq = c.lastSeq || 0; st.lastFull = c.lastFull || 0;
     }
   } catch { /* 坏缓存当没有 */ }
   let saveT = 0;
@@ -32,7 +33,7 @@
     saveT = setTimeout(() => {
       // 只缓存最近 KEEP_EVENTS 条，表再大本机缓存也不会无限变大
       const evs = [...st.events.values()].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).slice(-KEEP_EVENTS);
-      try { localStorage.setItem(CACHE, JSON.stringify({ v: 1, events: evs, roster: st.roster, slots: st.slots, seqs: st.seq, lastSeq: st.lastSeq, lastFull: st.lastFull })); } catch { /* 满了就不缓存 */ }
+      try { localStorage.setItem(CACHE, JSON.stringify({ v: 2, events: evs, roster: st.roster, slots: st.slots, activation: st.activation, seqs: st.seq, lastSeq: st.lastSeq, lastFull: st.lastFull })); } catch { /* 满了就不缓存 */ }
     }, 500);
   }
 
@@ -117,7 +118,7 @@
     if (inflight) return inflight;
     inflight = (async () => {
       stats.polls++;
-      // 第一次（没有缓存）：整张表读一遍。之后只读序号更大的行；每 15 分钟再单独核对一次最新的名单行和工位行
+      // 第一次（没有缓存）：整张表读一遍。之后只读序号更大的行；每 15 分钟再单独核对一次最新的名单、工位和激活行
       // （事件行写进去就不会再改，所以不用定期重读整张表，表变大了也不会越来越慢）。
       const first = !st.lastSeq, check = !first && Date.now() - st.lastFull > CHECK_EVERY;
       const notSwap = { property: "类型", select: { does_not_equal: "换人" } };
@@ -125,12 +126,15 @@
       let rows;
       try {
         rows = await queryAll(filter);
-        if (check) { rows = rows.concat(await latestOf("名单"), await latestOf("工位")); st.seq.roster = Math.min(st.seq.roster, 0); st.seq.slots = Math.min(st.seq.slots, 0); }
+        if (check) {
+          rows = rows.concat(await latestOf("名单"), await latestOf("工位"), await latestOf("激活"));
+          st.seq.roster = Math.min(st.seq.roster, 0); st.seq.slots = Math.min(st.seq.slots, 0); st.seq.activation = Math.min(st.seq.activation, 0);
+        }
       }
       catch (r) { fails++; stats.lastError = whyOf(r || {}); notice(stats.lastError); broken(); return false; }
-      fails = 0; stats.lastOk = Date.now(); curSlots(); notice(pendingNote());
+      fails = 0; stats.lastOk = Date.now(); curSlots(); curActivation();
       if (first || check) st.lastFull = Date.now();
-      const fresh = []; let rosterCh = false, slotsCh = false;
+      const fresh = []; let rosterCh = false, slotsCh = false, activationCh = false;
       for (const row of rows) {
         const p = row.properties || {}, kind = p["类型"]?.select?.name, seq = p["序号"]?.number || 0;
         let data; try { data = JSON.parse(text(p["数据"])); } catch { continue; }
@@ -141,15 +145,24 @@
           st.seq.roster = seq; if (JSON.stringify(st.roster) !== JSON.stringify(data)) { st.roster = data; rosterCh = true; }
         } else if (kind === "工位" && seq > st.seq.slots) {
           st.seq.slots = seq; const ch = JSON.stringify(st.slots) !== JSON.stringify(data); st.slots = data; if (st.pending || ch) slotsCh = true; st.pending = null; st.stale = false;
+        } else if (kind === "激活" && seq > st.seq.activation) {
+          st.seq.activation = seq;
+          const next = acceptActivation(st.activation, data);
+          activationCh = JSON.stringify(st.activation) !== JSON.stringify(next) || !!st.pendingActivation;
+          st.activation = next;
+          if (st.pendingActivation && sameDisabled(next.disabled, st.pendingActivation.rec.disabled)) { st.pendingActivation = null; st.activationStale = false; }
         }
       }
+      notice(pendingNote());
       const firstShow = !st.ready;
       markReady();
-      if (fresh.length || rosterCh || slotsCh || firstShow) saveCache();
+      if (fresh.length || rosterCh || slotsCh || activationCh || firstShow) saveCache();
       if (st.broken || firstShow) { st.broken = false; for (const s of streams) s._init(); }
       else for (const e of fresh.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))) { stats.newEvents++; for (const s of streams) s._emit("ev", e); }
+      for (const s of streams) s._emit("ping", { at: Date.now() });
       if (firstShow || rosterCh) window.dispatchEvent(new Event("liveboard:roster"));
       if (firstShow || slotsCh) window.dispatchEvent(new Event("liveboard:slots"));
+      if (firstShow || activationCh) window.dispatchEvent(new Event("liveboard:activation"));
       return true;
     })().finally(() => { inflight = null; });
     return inflight;
@@ -157,7 +170,8 @@
   function broken() { if (st.broken && st.ready) return; st.broken = true; for (const s of streams) s._error(); }
   function delay() {
     if (fails) return Math.min(30e3, 3e3 * 2 ** (fails - 1));
-    if (st.pending && Date.now() - st.pending.at < 15e3) return PENDING_MS;
+    const pendAt = Math.max(st.pending ? st.pending.at : 0, st.pendingActivation ? st.pendingActivation.at : 0);
+    if (pendAt && Date.now() - pendAt < 15e3) return PENDING_MS;
     return active ? ACTIVE_MS : IDLE_MS;
   }
   function loop(ms) { clearTimeout(timer); timer = setTimeout(async () => { await poll(); loop(delay()); }, ms); }
@@ -172,7 +186,51 @@
     if (st.pending) { st.pending = null; st.stale = true; notice(pendingNote()); }
     return st.slots;
   }
-  function pendingNote() { return st.stale ? T("r.pending") : ""; }
+  function pendingNote() {
+    const parts = [];
+    if (st.stale) parts.push(T("r.pending"));
+    if (st.activationStale) parts.push(T("r.pendingAct"));
+    return parts.join(" ");
+  }
+  function sameDisabled(a, b) { return [...(a || [])].slice().sort().join("|") === [...(b || [])].slice().sort().join("|"); }
+  // 比本地已保存的旧、或没有时间的快照，不覆盖人工停用。自动恢复也不会写这里。
+  function acceptActivation(local, incoming) {
+    const base = local && Array.isArray(local.disabled) ? local : { disabled: [] };
+    const inc = incoming && Array.isArray(incoming.disabled) ? incoming.disabled : null;
+    if (!inc || inc.some((n) => typeof n !== "string") || new Set(inc).size !== inc.length) return base;
+    const incAt = typeof incoming.updatedAt === "string" ? incoming.updatedAt : "";
+    const locAt = typeof base.updatedAt === "string" ? base.updatedAt : "";
+    if (locAt && (!incAt || incAt < locAt)) return base;
+    return { disabled: inc.slice(), updatedAt: incAt, by: typeof incoming.by === "string" ? incoming.by : "" };
+  }
+  function curActivation() {
+    if (st.pendingActivation && Date.now() - st.pendingActivation.at < PENDING_TTL) return st.pendingActivation.rec;
+    if (st.pendingActivation) { st.pendingActivation = null; st.activationStale = true; notice(pendingNote()); }
+    return st.activation || { disabled: [] };
+  }
+  const ACT_BY = "人工选择（自动恢复不会覆盖）";
+  async function putActivation(o) {
+    await whenReady();
+    const ok = new Set(((st.roster && st.roster.bots) || []).map((b) => b && b.name).filter(Boolean));
+    const cur = curActivation();
+    let disabled;
+    if (Array.isArray(o && o.disabled)) disabled = o.disabled;
+    else if (o && o.restore === "all") disabled = [];
+    else if (o && typeof o.restore === "string") disabled = (cur.disabled || []).filter((n) => n !== o.restore);
+    else return jres(400, { error: T("r.badAct") });
+    if (disabled.some((n) => typeof n !== "string" || !ok.has(n)) || new Set(disabled).size !== disabled.length) return jres(400, { error: T("r.badAct") });
+    const rec = { disabled: disabled.slice(), updatedAt: (o && typeof o.updatedAt === "string" && o.updatedAt) || new Date().toISOString(), by: ACT_BY };
+    const prev = st.activation;
+    st.activation = rec; st.pendingActivation = { rec, at: Date.now() }; st.activationStale = false; saveCache();
+    const body = { parent: { database_id: DB }, properties: {
+      "名称": { title: [{ type: "text", text: { content: "换人 " + rec.updatedAt } }] },
+      "类型": { select: { name: "换人" } }, "状态": { select: { name: "待处理" } },
+      "数据": { rich_text: [{ type: "text", text: { content: JSON.stringify({ activation: { disabled: rec.disabled }, at: rec.updatedAt }) } }] } } };
+    let r; try { r = await notion("POST", "/v1/pages", body); } catch { r = { status: 0, json: {} }; }
+    if (r.status !== 200) { st.activation = prev; st.pendingActivation = null; saveCache(); return jres(502, { error: whyOf(r) }); }
+    loop(PENDING_MS);
+    return jres(200, rec);
+  }
   const BY_TXT = { default: "默认（按最近动态，第一次存下后固定）", local: "沿用这台设备原来的选择", manual: "手动替换" };
   async function putSlots(o) {
     await whenReady();
@@ -201,6 +259,11 @@
     const method = String(init.method || (typeof input === "object" && input.method) || "GET").toUpperCase();
     if (path === "/api/roster") return (await whenReady()) && st.roster ? jres(200, st.roster) : jres(503, { error: "not ready" });
     if (path === "/api/events") return (await whenReady()) ? jres(200, [...st.events.values()]) : jres(503, { error: "not ready" });
+    if (path === "/__board/activation") {
+      if (method === "PUT") { let o = null; try { o = JSON.parse(init.body); } catch { /* 下面会拒 */ } return putActivation(o); }
+      if (!(await whenReady())) return jres(503, { error: "not ready" });
+      return jres(200, curActivation());
+    }
     if (path === "/__board/slots") {
       if (method === "PUT") { let o = null; try { o = JSON.parse(init.body); } catch { /* 下面会拒 */ } return putSlots(o); }
       if (!(await whenReady())) return jres(503, { error: "not ready" });

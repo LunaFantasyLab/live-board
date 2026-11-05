@@ -222,6 +222,36 @@ class TestNotion(Base):
         self.run_cli("sync", "--once")
         self.assertEqual(self.slots()["slots"], names)
 
+    def test_activation_is_manual_and_not_overwritten(self):
+        db = self.setup_db()
+        self.run_cli("ev", "开始", "--bot", "写手", "--msg", "开写")
+        self.assertEqual(self.run_cli("sync", "--once").returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.home, "state", "activation.json")), "没事件不等于停用，同步不写停用名单")
+        self.add_swap(db, {"activation": {"disabled": ["画师"]}, "at": "2026-11-05T00:02:00.000Z"})
+        self.assertEqual(self.run_cli("sync", "--once").returncode, 0, )
+        act = self.activation()
+        self.assertEqual((act["disabled"], act["updatedAt"], act["by"]), (["画师"], "2026-11-05T00:02:00.000Z", "人工选择（自动恢复不会覆盖）"))
+        self.add_swap(db, {"activation": {"disabled": []}, "at": "2026-11-05T00:01:00.000Z"})
+        self.assertEqual(self.run_cli("sync", "--once").returncode, 0)
+        self.assertEqual(self.activation()["disabled"], ["画师"], "更旧的同步不能覆盖人工停用")
+        self.run_cli("ev", "产出", "--bot", "写手", "--msg", "一稿")
+        names = ["调度", "研究员", "写手", "画师", "剪辑师", "审核员"]
+        self.add_swap(db, {"slots": names, "reason": "manual"})
+        self.assertEqual(self.run_cli("sync", "--once").returncode, 0)
+        self.assertEqual(self.activation()["disabled"], ["画师"], "新事件和换人都不改人工停用")
+        self.assertEqual(self.slots()["slots"], names, "停用不改工位")
+        self.add_swap(db, {"activation": {"disabled": ["外人"]}, "at": "2026-11-05T00:03:00.000Z"})
+        self.assertEqual(self.run_cli("sync", "--once").returncode, 0)
+        self.assertEqual(self.activation()["disabled"], ["画师"])
+        self.add_swap(db, {"activation": {"disabled": []}, "at": "2026-11-05T00:04:00.000Z"})
+        self.assertEqual(self.run_cli("sync", "--once").returncode, 0)
+        self.assertEqual(self.activation()["disabled"], [])
+        alive = [x for x in self.query(db) if self.kind(x) == "激活" and not x["archived"]]
+        self.assertEqual(len(alive), 1)
+        data = json.loads("".join(t.get("plain_text") or "" for t in alive[0]["properties"]["数据"]["rich_text"]))
+        self.assertEqual(data["disabled"], [])
+        self.assertTrue(all(x["archived"] for x in self.query(db) if self.kind(x) == "换人"))
+
     def test_bootstrap_keeps_newest_row(self):
         # DS-5：记账文件丢了重读 Notion 时，同一种行有好几行（序号一样）也要留最新那行
         db = self.setup_db()
@@ -260,6 +290,10 @@ class TestNotion(Base):
         with open(os.path.join(self.home, "state", "slots.json")) as f:
             return json.load(f)
 
+    def activation(self):
+        with open(os.path.join(self.home, "state", "activation.json")) as f:
+            return json.load(f)
+
     def kind(self, row):
         return row["properties"]["类型"]["select"]["name"]
 
@@ -292,6 +326,25 @@ class TestServe(Base):
             self.assertEqual((code, o["slots"]), (200, names))
             code, o = jreq(base + "/__board/slots", "PUT", {"slots": names[::-1], "ifEmpty": True}, {"X-Live-Board": "1"})
             self.assertEqual((code, o["slots"], o.get("kept")), (200, names, True))
+            # 人工停用：默认全员激活；点击立即保存；更旧的同步不能覆盖；换工位也不会清掉
+            self.assertEqual(jget(base + "/__board/activation"), {"disabled": []})
+            hdr = {"X-Live-Board": "1"}
+            self.assertEqual(jreq(base + "/__board/activation", "PUT", {"disabled": ["写手"]})[0], 404, "没有 X-Live-Board 头不收")
+            self.assertEqual(jreq(base + "/__board/activation", "PUT", {"disabled": ["外人"]}, hdr)[0], 400)
+            self.assertEqual(jreq(base + "/__board/activation", "PUT", {"disabled": ["写手", "写手"]}, hdr)[0], 400)
+            code, o = jreq(base + "/__board/activation", "PUT", {"disabled": ["画师", "写手"], "updatedAt": "2026-11-05T00:02:00.000Z"}, hdr)
+            self.assertEqual((code, o["disabled"], o["updatedAt"], o["by"]), (200, ["画师", "写手"], "2026-11-05T00:02:00.000Z", "人工选择（自动恢复不会覆盖）"))
+            code, o = jreq(base + "/__board/activation", "PUT", {"disabled": [], "updatedAt": "2026-11-05T00:01:00.000Z"}, hdr)
+            self.assertEqual((code, o.get("kept"), o["disabled"]), (200, True, ["画师", "写手"]), "更旧的保存不能覆盖")
+            self.assertEqual(jget(base + "/__board/activation")["disabled"], ["画师", "写手"])
+            code, o = jreq(base + "/__board/activation", "PUT", {"restore": "画师", "updatedAt": "2026-11-05T00:03:00.000Z"}, hdr)
+            self.assertEqual((code, o["disabled"]), (200, ["写手"]))
+            code, o = jreq(base + "/__board/activation", "PUT", {"restore": "all", "updatedAt": "2026-11-05T00:04:00.000Z"}, hdr)
+            self.assertEqual((code, o["disabled"]), (200, []))
+            code, o = jreq(base + "/__board/activation", "PUT", {"disabled": ["审核员"], "updatedAt": "2026-11-05T00:05:00.000Z"}, hdr)
+            self.assertEqual(code, 200)
+            self.assertEqual(jget(base + "/__board/slots")["slots"], names, "停用不改工位")
+            self.assertEqual(jget(base + "/__board/activation")["disabled"], ["审核员"])
         finally:
             p.terminate(); p.wait(5)
 

@@ -88,7 +88,10 @@ python3 liveboard.py ev 完成   --bot 审核员 --project 周报 --msg "已发�
 
 ## 看板上能做什么
 
-- 6 个工位：默认按最近有动态的成员排；点工位上的人可以从「替补席」换人，换人结果存在写入端，所有 Mac 看到的一样。
+- 6 个工位：默认按最近有动态的成员排前 6 位，之后记住；点工位上的人可以从「替补席」换人，换人结果存在写入端，所有 Mac 看到的一样。自动刷新还是打开时约 3 秒、收起时约 30 秒。
+- 名单里的人**默认都已激活**。从没打过卡显示为空闲，不再显示「未激活」。
+- 「更多 → 成员」里可以逐个**停用 / 恢复**，也可以**全部恢复**。点下去立刻保存。刷新、自动同步都不会把这份选择盖掉；连接断开或一段时间没有心跳时，没被人工停用的人会显示离线，一旦又收到心跳或新打卡，就按真实记录回到活动。人工停用的人保持停用，不会被这个自动恢复改回来。
+- 停用和恢复**只改看板怎么显示**，不会启动、唤醒，也不会给任何人派活。
 - 顶部：工作中 / 空闲 / 待你确认 的人数；当前任务走到第几步。
 - 「最近动态」：按时间倒序的打卡记录；「更多」里可以按天回放。
 - 右键菜单：刷新、重新设置…、登录时自动打开（默认开）、语言、关于、退出。
@@ -116,8 +119,9 @@ python3 liveboard.py ev 完成   --bot 审核员 --project 周报 --msg "已发�
 
 ```bash
 cd board && npm ci && npm run dev                 # 看板网页开发（配合 writer/liveboard.py serve 提供本机数据）
-python3 tests/test_writer.py -v                   # 写入端测试（用本机假 Notion）
+python3 tests/test_writer.py -v                   # 写入端测试（用本机假 Notion，含人工停用）
 python3 tests/test_i18n.py -v                     # 中英文字符表、文档检查
+node tests/test_activation.mjs                    # 激活显示：默认空闲、人工停用、断连后自动恢复
 bash scripts/build-app.sh --stage-only && python3 tests/e2e.py   # 浏览器端到端测试（需要 Python Playwright）
 swiftc app/LiveBoard/Policy.swift app/LiveBoard/Store.swift app/LiveBoard/Lang.swift tests/swift/main.swift -o /tmp/policy-tests && /tmp/policy-tests   # 原生层放行规则、密钥保存测试
 ```

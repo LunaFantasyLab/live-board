@@ -4,7 +4,7 @@
 // 帧率：不再锁 30 帧，跟随 requestAnimationFrame（屏幕刷新率是多少就跑多少，120Hz 屏就是 120 帧）；
 //   所有动画都按真实时间差 dt 推进，帧率高低只影响细腻度，不影响速度；页面隐藏时停画；
 //   性能：一次 render 约 200 次绘制、无后期、阴影图 2048×1024、像素比最高 2（持续掉帧时自动降到 1.5 / 1.25）、拾取节流到每帧最多一次。
-// 全部动态：空闲＝呼吸、眨眼、张望、摆弄道具、偶尔摆个造型；未激活＝褪成浅灰、缩进工位打盹、冒「Z」；
+// 全部动态：空闲＝呼吸、眨眼、张望、摆弄道具、偶尔摆个造型；已停用或连接离线＝褪成浅灰、缩进工位打盹、冒「Z」；
 //   工作中＝按道具做夸张的忙碌动作，眼睛和天线灯变红、灯快闪；待你确认＝举手 +「?」；退回 / 报错＝摇头 +「!」。
 //   交接＝红色卡片旋转飞过去，退回＝黑卡红边。
 // 减少动态（系统设置）：全部静止，只在数据变化时重画一帧。
@@ -63,7 +63,7 @@ export async function createScene(host, roster, { onPick, model, slots, labelOf 
   controls.minPolarAngle = 0.75; controls.maxPolarAngle = 1.35;
   controls.update();
 
-  // 卡通着色：两档硬明暗（亮面 = 原色，暗面 ≈ 55%）；每个机器人一份材质，未激活时褪成浅灰
+  // 卡通着色：两档硬明暗（亮面 = 原色，暗面 ≈ 55%）；每个机器人一份材质，已停用或离线时褪成浅灰
   const grad = new THREE.DataTexture(new Uint8Array([60, 60, 60, 255, 255, 255, 255, 255]), 2, 1, THREE.RGBAFormat);
   grad.minFilter = grad.magFilter = THREE.NearestFilter; grad.needsUpdate = true;
   const FADE = new THREE.Color(PAL.grey);
@@ -156,7 +156,7 @@ export async function createScene(host, roster, { onPick, model, slots, labelOf 
     Object.assign(s, { tBlink: r(0.5, 4), tLook: r(2, 9), tFid: r(3, 10), tLamp: r(1, 5), tZ: r(0.3, 3), tNod: r(4, 9), nod: -9, look: 0, lookTo: 0, fid: -9, fidKind: 0, flash: -9, blink: -9 });
   }
 
-  // 实况待机：每个工位桌面上一块「屏幕微光」（纯装饰，和工作状态无关；未激活的工位更暗）
+  // 实况待机：每个工位桌面上一块「屏幕微光」（纯装饰，和工作状态无关；已停用或离线的工位更暗）
   const glows = [];
   if (SLOT) {
     const gt = (() => { const c = document.createElement("canvas"); c.width = c.height = 64; const g = c.getContext("2d");
@@ -269,7 +269,7 @@ export async function createScene(host, roster, { onPick, model, slots, labelOf 
       hy = br * 0.03; rz = 0.24 + Math.sin(w * 0.6) * 0.08; rx = -0.06 + br * 0.03; eye = 0.14; bz = Math.sin(w * 0.6) * 0.03;
       aL = 0.06 + br * 0.05; aR = 0.06 + br * 0.05;
       if (t > s.tZ) { spawnZ(s, t); s.tZ = t + rnd(1.6, 3.2); }
-      if (SLOT) {                                   // 实况待机（未激活）：打瞌睡点头——头越垂越低，猛一下惊醒、眼睛睁一下又眯回去
+      if (SLOT) {                                   // 实况待机（已停用或离线）：打瞌睡点头——头越垂越低，猛一下惊醒、眼睛睁一下又眯回去
         if (t > s.tNod) { s.nod = t; s.tNod = t + rnd(6, 11); }
         const k = (t - s.nod) / 2.4;
         if (k > 0 && k < 1) { const drop = k < 0.75 ? Math.sin((k / 0.75) * Math.PI / 2) : 1 - (k - 0.75) / 0.25 * 1.4; rx += 0.32 * Math.max(-0.25, drop); if (k > 0.75 && k < 0.9) { eye = 0.85; hy += 0.04; } }

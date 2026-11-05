@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """liveboard — 实时看板的写入端（只用 Python 标准库，Python 3.8+，macOS / Linux）。
 
-成员打卡写进本机的 events.jsonl（只追加）；sync 常驻进程把事件、名单、工位同步到你 Notion 里的「看板数据」表，
-Mac 菜单栏 App 从那张表读。Mac 上换人会在表里加一行「换人」，也由 sync 处理。
+成员打卡写进本机的 events.jsonl（只追加）；sync 常驻进程把事件、名单、工位、人工停用同步到你 Notion 里的「看板数据」表，
+Mac 菜单栏 App 从那张表读。Mac 上换人或改显示停用会在表里加一行「换人」，也由 sync 处理。停用只改看板显示，不派活。
 
 用法
   liveboard.py init [--database <表链接或ID>]    第一次：保存连接密钥（提示粘贴，不回显）和表 ID，并当场验证
@@ -24,7 +24,8 @@ Mac 菜单栏 App 从那张表读。Mac 上换人会在表里加一行「换人�
 连接密钥也可以放在环境变量 LIVEBOARD_NOTION_TOKEN 里。
 """
 DOC_EN = """Live Board writer: logs check-ins to a local events.jsonl (append-only); the sync process pushes events,
-the roster and the desks to the "Board data" table in your Notion, and the Mac menu bar app reads that table.
+the roster, the desks and the display-only hide list to the "Board data" table in your Notion, and the Mac menu bar app reads that table.
+Hiding a member only changes the board. It does not start, wake, or assign work.
 
 Usage
   liveboard.py init [--database <table link or ID>]   first run: save the integration token (pasted, hidden) and table ID, then verify
@@ -60,6 +61,7 @@ ROSTER = os.path.join(HOME, "roster.json")
 EVENTS = os.path.join(HOME, "events.jsonl")
 STATE = os.path.join(HOME, "state")
 SLOTS = os.path.join(STATE, "slots.json")
+ACTIVATION = os.path.join(STATE, "activation.json")
 SYNC = os.path.join(STATE, "sync.json")
 STATUS = os.path.join(STATE, "status.json")
 LOCK = os.path.join(STATE, "sync.lock")
@@ -72,6 +74,8 @@ MIN_GAP = float(os.environ.get("LIVEBOARD_MIN_GAP", "0.45"))   # 两次请求至
 SWAP_EVERY = 2.0
 CHUNK = 1000          # Notion 每段文字上限 2000 字，取 1000 留余量
 BY_TXT = {"default": "默认（按最近动态，第一次存下后固定）", "local": "沿用这台设备原来的选择", "manual": "手动替换"}
+ACT_BY = "人工选择（自动恢复不会覆盖）"
+AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 TYPES = ["接单", "开始", "产出", "交接", "退回", "待确认", "完成", "报错"]
 TYPE_ALIAS = {"claim": "接单", "start": "开始", "output": "产出", "handoff": "交接", "return": "退回",
               "confirm": "待确认", "done": "完成", "error": "报错"}
@@ -94,7 +98,8 @@ B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 SCHEMA = {
     "名称": {"title": {}},
     "类型": {"select": {"options": [{"name": "事件", "color": "blue"}, {"name": "工位", "color": "green"},
-                                   {"name": "名单", "color": "purple"}, {"name": "换人", "color": "orange"}]}},
+                                   {"name": "名单", "color": "purple"}, {"name": "换人", "color": "orange"},
+                                   {"name": "激活", "color": "gray"}]}},
     "序号": {"number": {"format": "number"}},
     "数据": {"rich_text": {}},
     "状态": {"select": {"options": [{"name": "待处理", "color": "yellow"}, {"name": "已处理", "color": "green"},
@@ -369,6 +374,34 @@ def save_slots(a, reason, if_empty):
     return rec
 
 
+def read_activation():
+    o = read_json(ACTIVATION)
+    if isinstance(o, dict) and isinstance(o.get("disabled"), list):
+        return o
+    return None
+
+
+def valid_disabled(a, names):
+    return isinstance(a, list) and all(isinstance(x, str) and x in names for x in a) and len(set(a)) == len(a)
+
+
+def activation_at(at):
+    if isinstance(at, str) and AT_RE.match(at):
+        return at
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+
+
+def save_activation(disabled, at=None):
+    """只保存人工停用。比已保存记录更旧的写入直接丢掉，避免刷新或迟到的同步把选择盖掉。"""
+    rec_at = activation_at(at)
+    cur = read_activation()
+    if cur and isinstance(cur.get("updatedAt"), str) and rec_at < cur["updatedAt"]:
+        return dict(cur, kept=True)
+    rec = {"disabled": list(disabled), "updatedAt": rec_at, "by": ACT_BY}
+    write_json(ACTIVATION, rec, 0o644)
+    return rec
+
+
 def reason_en(reason, if_empty):
     return {"default": "default", "local": "kept this device's choice", "manual": "manual"}.get(reason) or ("default" if if_empty else "manual")
 
@@ -399,7 +432,7 @@ class Sync:
     def bootstrap(self):
         """记账文件没了（或换了表）：从 Notion 表里把已有的行读一遍，避免重复写。"""
         st = {"database_id": self.db, "seq": 0, "ids": set(), "roster_page": None, "slots_page": None,
-              "roster_hash": None, "slots_hash": None}
+              "roster_hash": None, "slots_hash": None, "activation_page": None, "activation_hash": None}
         rows = self.n.query(self.db, {"filter": {"property": "类型", "select": {"does_not_equal": "换人"}},
                                       "sorts": [{"property": "序号", "direction": "ascending"},
                                                 {"timestamp": "created_time", "direction": "ascending"}]})
@@ -413,8 +446,8 @@ class Sync:
             name = plain(p.get("名称"))
             if kind == "事件":
                 st["ids"].add(name)
-            elif kind in ("名单", "工位"):
-                key = "roster" if kind == "名单" else "slots"
+            elif kind in ("名单", "工位", "激活"):
+                key = {"名单": "roster", "工位": "slots", "激活": "activation"}[kind]
                 if st[key + "_page"] and st.get(key + "_seq", 0) > seq:
                     self.n.call("PATCH", f"/v1/pages/{r['id']}", {"archived": True})   # 多出来的旧行
                     continue
@@ -508,6 +541,26 @@ class Sync:
             return False
         return self.upsert("slots", "工位", json.dumps({"slots": o["slots"], "updatedAt": o.get("updatedAt"), "by": o.get("by")}, ensure_ascii=False))
 
+    def push_activation(self):
+        o = read_activation()
+        if not o:
+            return False
+        return self.upsert("activation", "激活", json.dumps({"disabled": o.get("disabled") or [], "updatedAt": o.get("updatedAt"), "by": o.get("by")}, ensure_ascii=False))
+
+    def apply_activation(self, o, names):
+        disabled = (o.get("activation") or {}).get("disabled") if isinstance(o.get("activation"), dict) else None
+        if not valid_disabled(disabled, names):
+            log(t("人工停用被拒：名字不在名单里或有重复", "Manual hide rejected: a name isn't in the roster, or is repeated"))
+            return "已拒绝"
+        rec = save_activation(disabled, o.get("at") or o.get("updatedAt"))
+        if rec.get("kept"):
+            log(t("激活状态保持原样：收到的记录比已保存的旧", "Activation unchanged: the incoming record is older than the saved one"))
+        else:
+            who = "、".join(rec["disabled"]) or "无"
+            who_en = ", ".join(rec["disabled"]) or "none"
+            log(t(f"人工停用已存：{who}（只改显示，不派活）", f"Manual hide saved: {who_en} (display only, no work assigned)"))
+        return "已处理"
+
     def handle_swaps(self):
         if time.monotonic() - self.last_swap < SWAP_EVERY:
             return 0
@@ -521,6 +574,11 @@ class Sync:
             verdict = "已拒绝"
             try:
                 o = json.loads(plain(r["properties"].get("数据")))
+                if isinstance(o, dict) and isinstance(o.get("activation"), dict):
+                    verdict = self.apply_activation(o, names)
+                    self.n.call("PATCH", f"/v1/pages/{r['id']}", {"properties": {"状态": {"select": {"name": verdict}}}, "archived": True})
+                    done += 1
+                    continue
                 a = o.get("slots")
                 if valid_slots(a, names):
                     if o.get("ifEmpty") and read_slots():
@@ -542,7 +600,8 @@ class Sync:
         b = self.push_slots()
         c = self.push_roster()
         d = self.push_events()
-        return a or b or c or d
+        e = self.push_activation()
+        return a or b or c or d or e
 
 
 def cmd_sync(args):
@@ -893,6 +952,11 @@ class Preview(BaseHTTPRequestHandler):
         if path == "/__board/slots":
             o = read_slots()
             return self.send(200, o if o else {"slots": None})
+        if path == "/__board/activation":
+            o = read_activation()
+            if not o:
+                return self.send(200, {"disabled": []})
+            return self.send(200, {"disabled": list(o.get("disabled") or []), "updatedAt": o.get("updatedAt") or "", "by": o.get("by") or ""})
         if path == "/api/stream":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -910,6 +974,7 @@ class Preview(BaseHTTPRequestHandler):
                         if e["id"] not in seen:
                             seen.add(e["id"])
                             self.wfile.write(f"event: ev\ndata: {json.dumps(e, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.write(b"event: ping\ndata: {}\n\n")
                     self.wfile.write(b": ping\n\n")
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
@@ -917,19 +982,39 @@ class Preview(BaseHTTPRequestHandler):
         self.send(404, {"error": "not found"})
 
     def do_PUT(self):
-        if self.path.split("?")[0] != "/__board/slots" or self.headers.get("X-Live-Board") != "1":
+        path = self.path.split("?")[0]
+        if path not in ("/__board/slots", "/__board/activation") or self.headers.get("X-Live-Board") != "1":
             return self.send(404, {"error": "not found"})
         try:
             o = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         except ValueError:
             return self.send(400, {"error": "bad json"})
         names = {b.get("name") for b in load_roster(strict=False).get("bots", []) if isinstance(b, dict)}
+        if path == "/__board/activation":
+            return self.put_activation(o, names)
         if not valid_slots(o.get("slots"), names):
             return self.send(400, {"error": t(f"slots 要是 {SLOT_N} 个不重复、名单里有的名字", f"slots must be {SLOT_N} distinct names from the roster")})
         cur = read_slots()
         if o.get("ifEmpty") and cur:
             return self.send(200, dict(cur, kept=True))
         return self.send(200, save_slots(o["slots"], o.get("reason"), o.get("ifEmpty")))
+
+    def put_activation(self, o, names):
+        cur = read_activation()
+        if isinstance(o.get("disabled"), list):
+            disabled = o["disabled"]
+        elif o.get("restore") == "all":
+            disabled = []
+        elif isinstance(o.get("restore"), str):
+            if o["restore"] not in names:
+                return self.send(400, {"error": t("恢复对象不在名单里", "That member isn't in the roster")})
+            disabled = [n for n in ((cur or {}).get("disabled") or []) if n != o["restore"]]
+        else:
+            return self.send(400, {"error": t("要传 disabled 名单、单个 restore 或 restore=all", "Send a disabled list, one restore name, or restore=all")})
+        if not valid_disabled(disabled, names):
+            return self.send(400, {"error": t("停用名单只能是名单里不重复的名字", "The hidden list must be distinct names from the roster")})
+        rec = save_activation(disabled, o.get("updatedAt") or o.get("at"))
+        return self.send(200, {"disabled": list(rec.get("disabled") or []), "updatedAt": rec.get("updatedAt") or "", "by": rec.get("by") or "", **({"kept": True} if rec.get("kept") else {})})
 
 
 def cmd_serve(args):
