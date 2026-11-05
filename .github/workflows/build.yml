@@ -15,6 +15,7 @@ jobs:
         with: { python-version: "3.12" }
       - run: python3 tests/test_writer.py -v
       - run: python3 tests/test_i18n.py -v   # 中英两套界面文字一一对应
+      - run: node tests/test_activation.mjs  # 激活显示：默认空闲、人工停用、断连自动恢复
   app:
     needs: test
     runs-on: macos-15-intel   # 通用二进制（arm64 + x86_64），Intel 机器排队更短

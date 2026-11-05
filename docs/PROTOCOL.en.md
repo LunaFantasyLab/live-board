@@ -4,14 +4,14 @@
 
 The writer and the Mac app exchange data only through one table in your Notion, "Board data" (`看板数据` when created in Chinese). Both sides use only the public Notion API (`Notion-Version: 2022-06-28`).
 
-> **Fixed identifiers.** Column names (`名称`, `类型`, `序号`, `数据`, `状态`) and select values (`事件`, `工位`, `名单`, `换人`, `待处理`, `已处理`, `已拒绝`) are protocol identifiers. They are the same in every UI language and must not be renamed or translated. Only the titles of the relay page and the table may differ.
+> **Fixed identifiers.** Column names (`名称`, `类型`, `序号`, `数据`, `状态`) and select values (`事件`, `工位`, `名单`, `换人`, `激活`, `待处理`, `已处理`, `已拒绝`) are protocol identifiers. They are the same in every UI language and must not be renamed or translated. Only the titles of the relay page and the table may differ.
 
 ## The "Board data" table
 
 | Column | Notion type | Meaning |
 |---|---|---|
-| `名称` (name) | Title | Event row: the event ID; roster / desk rows: `名单` / `工位`; desk-swap row: `换人 <time>` |
-| `类型` (kind) | Select | `事件` (event) / `工位` (desks) / `名单` (roster) / `换人` (desk swap) |
+| `名称` (name) | Title | Event row: the event ID; roster / desk / activation rows: `名单` / `工位` / `激活`; desk-swap row: `换人 <time>` |
+| `类型` (kind) | Select | `事件` (event) / `工位` (desks) / `名单` (roster) / `换人` (desk swap) / `激活` (activation) |
 | `序号` (sequence) | Number | Assigned by the writer, only ever increases; the board reads incrementally by it |
 | `数据` (data) | Text | A JSON string (longer than 1000 characters it's split into several text segments and joined when read) |
 | `状态` (state) | Select | Desk-swap rows only: `待处理` (pending) / `已处理` (done) / `已拒绝` (rejected) |
@@ -23,10 +23,11 @@ Who writes what:
 | Event | Writer | One row per check-in, append-only |
 | Roster | Writer | A single row, updated (with a new sequence number) when the roster changes |
 | Desks | Writer | A single row, updated (with a new sequence number) when the desks change |
-| Desk swap | Mac app | One `待处理` row per swap; the writer checks it, sets it to `已处理` or `已拒绝`, and archives it |
+| Activation | Writer | A single row, updated (with a new sequence number) when the manual hide list changes. No such row means everyone is shown |
+| Desk swap | Mac app | One `待处理` row per desk swap or per display-hide change; the writer checks it, sets it to `已处理` or `已拒绝`, and archives it |
 
 How the board reads: a full read the first time; after that only rows with `序号 > highest seen − 50` (a margin of 50 because new Notion rows can take a moment to become queryable).
-Every 15 minutes it also asks for the latest roster row and desk row (sequence descending, one row each) so nothing is missed.
+Every 15 minutes it also asks for the latest roster row, desk row and activation row (sequence descending, one row each) so nothing is missed.
 
 ## Event (one line of events.jsonl, and the `数据` of an event row)
 
@@ -69,6 +70,24 @@ See [examples/roster.example.en.json](../examples/roster.example.en.json), [exam
 
 What the writer does: the six names must be distinct and all in the roster, otherwise the row becomes `已拒绝`; if `ifEmpty` is true and desks already exist, nothing changes.
 After writing a desk-swap row the Mac app waits up to 60 seconds; if no new desk row arrives in that time, the board goes back to the previous desks and says the writer doesn't seem to be running.
+
+## Manual hide list (state/activation.json, and the `数据` of the activation row)
+
+This only changes what the board draws. It does not start, wake, or assign work. If the file is missing, or `disabled` is empty, everyone on the roster is shown. A member who has never checked in is idle, and is not written into `disabled`.
+
+```json
+{"disabled":["Reviewer"],"updatedAt":"2026-11-05T00:02:00.000Z","by":"人工选择（自动恢复不会覆盖）"}
+```
+
+`by` is a stored note, not translated and not shown in the UI.
+
+To change the list, the Mac app still writes one `换人` / `待处理` row. Its `数据` is:
+
+```json
+{"activation":{"disabled":["Reviewer"]},"at":"2026-11-05T00:02:00.000Z"}
+```
+
+What the writer does: every name must be in the roster and names must not repeat, otherwise the row becomes `已拒绝`. If `at` is older than the saved `updatedAt`, the saved list is kept, so a refresh or a late sync cannot overwrite it. After that the writer pushes the activation row. A dropped connection or a missed heartbeat only shows as offline on the board; the next heartbeat or check-in restores the state from the record and does not change this file.
 
 ## Requests the Mac app's native layer allows
 

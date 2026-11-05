@@ -12,7 +12,7 @@
   // 看板数据表的结构（和 writer/liveboard.py 里的 SCHEMA 一致）
   const SCHEMA = {
     "名称": { title: {} },
-    "类型": { select: { options: [{ name: "事件", color: "blue" }, { name: "工位", color: "green" }, { name: "名单", color: "purple" }, { name: "换人", color: "orange" }] } },
+    "类型": { select: { options: [{ name: "事件", color: "blue" }, { name: "工位", color: "green" }, { name: "名单", color: "purple" }, { name: "换人", color: "orange" }, { name: "激活", color: "gray" }] } },
     "序号": { number: { format: "number" } },
     "数据": { rich_text: {} },
     "状态": { select: { options: [{ name: "待处理", color: "yellow" }, { name: "已处理", color: "green" }, { name: "已拒绝", color: "red" }] } },

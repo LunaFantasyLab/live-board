@@ -122,9 +122,9 @@ class TestWeb(unittest.TestCase):
         for f in ("app/LiveBoard/web/setup.js", "app/LiveBoard/web/relay.js"):
             src = re.sub(r"//[^\n]*|/\*.*?\*/", "", read(f), flags=re.S)
             lits = [s for s in re.findall(r'"((?:[^"\\\n]|\\.)*)"|`((?:[^`\\]|\\.)*)`', src) for s in s if s and CJK.search(s)]
-            protocol = {"名称", "类型", "序号", "数据", "状态", "事件", "工位", "名单", "换人", "待处理", "已处理", "已拒绝", "换人 ",
-                        # 工位记录里的 by 字段：写进数据、和写入端一致，界面不显示
-                        "默认（按最近动态，第一次存下后固定）", "沿用这台设备原来的选择", "手动替换"}
+            protocol = {"名称", "类型", "序号", "数据", "状态", "事件", "工位", "名单", "换人", "激活", "待处理", "已处理", "已拒绝", "换人 ",
+                        # 工位 / 激活记录里的 by 字段：写进数据、和写入端一致，界面不显示
+                        "默认（按最近动态，第一次存下后固定）", "沿用这台设备原来的选择", "手动替换", "人工选择（自动恢复不会覆盖）"}
             self.assertEqual([s for s in lits if s not in protocol and not s.startswith("换人 ")], [], f)
 
 

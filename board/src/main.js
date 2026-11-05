@@ -3,6 +3,7 @@ import "./style.css";
 import { DEFAULT_TITLE, SLOT_N } from "./data.js";
 import { createScene, LAMP } from "./scene.js";
 import { LANG, t, tyOf } from "./i18n.js";
+import { acceptSyncedActivation, deriveStates } from "./state.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -12,7 +13,6 @@ const fmtDate = new Intl.DateTimeFormat(LANG === "en" ? "en-US" : "zh-CN", { tim
 document.documentElement.lang = LANG === "en" ? "en" : "zh-CN";
 const fmtDay = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
 const dayOf = (ms) => fmtDay.format(ms);
-const H = 3600e3;
 const params = new URLSearchParams(location.search);
 let mode = params.get("mode") === "replay" ? "replay" : "live";   // 打开就是实况；回放从「更多」进
 // 名单、标题、流程步骤都来自 /api/roster（写入端 roster.json 的原样内容）
@@ -46,32 +46,10 @@ function setTitle(title) {
 }
 
 // ---------- 状态 ----------
-// st：work 进行中 / wait 待接手 / back 被退回 / confirm 待你确认 / error 报错 / done 刚交完 / idle 空闲 / none 未激活
-// group：on 工作中 / idle 空闲 / off 未激活
-const WORD = Object.fromEntries(["work", "wait", "back", "confirm", "error", "done", "idle", "none"].map((k) => [k, t("st." + k)]));
-function deriveStates(evs, now) {
-  const last = {}, lastIn = {}, seen = new Set();
-  for (const e of evs) {
-    last[e.bot] = e; seen.add(e.bot);
-    if (e.to) { seen.add(e.to); if (e.type === "交接" || e.type === "退回") lastIn[e.to] = e; }
-  }
-  const out = {};
-  for (const b of ROSTER) {
-    const l = last[b.name], i = lastIn[b.name];
-    let st = seen.has(b.name) ? "idle" : "none", ref = l, incoming = false;
-    if (i && (!l || i._t >= l._t) && now - i._t < 24 * H) { st = i.type === "退回" ? "back" : "wait"; ref = i; incoming = true; }
-    else if (l) {
-      const age = now - l._t;
-      if (l.type === "报错") st = "error";
-      else if (l.type === "待确认") st = "confirm";
-      else if (["交接", "完成", "退回"].includes(l.type)) st = age < 8 * H ? "done" : "idle";
-      else st = age < 2 * H ? "work" : "idle";
-    }
-    const group = st === "none" ? "off" : ["work", "wait", "back", "confirm", "error"].includes(st) ? "on" : "idle";
-    out[b.name] = { st, group, ref, incoming };
-  }
-  return out;
-}
+// st：work 进行中 / wait 待接手 / back 被退回 / confirm 待你确认 / error 报错 / done 刚交完 / idle 空闲 / none 离线 / disabled 已停用
+// 从没打过卡是空闲。none 只在连接断开或心跳超时；disabled 只来自人工停用，会保存，自动恢复改不了它。
+// group：on 工作中 / idle 空闲 / off 离线或已停用（只影响画法）
+const WORD = Object.fromEntries(["work", "wait", "back", "confirm", "error", "done", "idle", "none", "disabled"].map((k) => [k, t("st." + k)]));
 
 // ---------- 流程 ----------
 // 名单里给成员写了 stage（stages 的下标）才有步骤条；被退回时算回到接收方那一步
@@ -134,7 +112,7 @@ $("#app").innerHTML = `
       <ol class="steps" id="steps"></ol>
     </section>
     <details id="more"><summary>${t("more")}</summary>
-      <details id="members"><summary>${t("members")}<span class="cnt">0</span></summary><ul id="mlist" class="mlist"></ul></details>
+      <details id="members"><summary>${t("members")}<span class="cnt">0</span></summary><div class="member-actions"><span id="activation-note">${t("act.note")}</span><button type="button" id="restore-all">${t("act.restoreAll")}</button></div><ul id="mlist" class="mlist"></ul></details>
       <details id="logbox"><summary>${t("log")}<span class="cnt" id="logn">0</span></summary><ol id="log" class="log"></ol></details>
       <footer class="foot">
         <nav class="modes" aria-label="${t("views")}">
@@ -184,8 +162,52 @@ function fixSlots(a, evs = []) {   // 去掉名单外 / 重复的名字，空位
 let slots = fixSlots(savedSlots || []), defaultsDone = !!savedSlots;
 const hadLocal = !!savedSlots;
 // 服务器端：srv = "ok" 能用 / "off" 用不了（只用本机缓存）；serverHad = 服务器上已经存过
-const SLOT_API = "/__board/slots";
+const SLOT_API = "/__board/slots", ACTIVATION_API = "/__board/activation";
 let srv = "unknown", serverHad = false;
+// 人工停用。默认空名单 = 全员已激活。只改显示；刷新和同步如果比这份旧，不能覆盖。
+let activationRec = { disabled: [], updatedAt: "", by: "" }, actSaving = false, linkDown = false, lastOk = 0;
+async function fetchActivation() {
+  try {
+    const r = await fetch(ACTIVATION_API, { cache: "no-store", credentials: "same-origin" });
+    if (!r.ok || !(r.headers.get("content-type") || "").includes("application/json")) return null;
+    const o = await r.json();
+    if (!Array.isArray(o?.disabled)) return null;
+    return { disabled: o.disabled.filter((n) => typeof n === "string"), updatedAt: typeof o.updatedAt === "string" ? o.updatedAt : "", by: typeof o.by === "string" ? o.by : "" };
+  } catch { return null; }
+}
+async function syncActivation() {
+  if (actSaving) return;
+  const incoming = await fetchActivation(); if (!incoming) return;
+  const next = acceptSyncedActivation(activationRec, incoming);
+  if (next.disabled.join("|") === activationRec.disabled.join("|") && next.updatedAt === activationRec.updatedAt) return;
+  activationRec = next; if (scene) render();
+}
+async function saveActivation(disabled) {
+  const previous = activationRec;
+  const rec = { disabled: disabled.slice(), updatedAt: new Date().toISOString(), by: previous.by };
+  activationRec = rec; actSaving = true; render();
+  try {
+    const r = await fetch(ACTIVATION_API, { method: "PUT", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Live-Board": "1" }, body: JSON.stringify({ disabled: rec.disabled, updatedAt: rec.updatedAt }) });
+    if (!r.ok) throw new Error("save");
+    const o = await r.json();
+    if (o?.kept && Array.isArray(o.disabled)) {
+      activationRec = acceptSyncedActivation(rec, { disabled: o.disabled.filter((n) => typeof n === "string"), updatedAt: typeof o.updatedAt === "string" ? o.updatedAt : "", by: typeof o.by === "string" ? o.by : "" });
+      toast(t("act.kept"));
+    } else toast(activationRec.disabled.length ? t("act.saved", { n: activationRec.disabled.length }) : t("act.restored"));
+    render();
+  } catch {
+    activationRec = previous; render(); toast(t("act.fail"));
+  } finally { actSaving = false; }
+}
+function toggleActivation(name) {
+  if (!BY[name]) return;
+  const next = new Set(activationRec.disabled);
+  if (next.has(name)) next.delete(name); else next.add(name);
+  saveActivation([...next]);
+}
+window.addEventListener("liveboard:activation", () => { if (mode === "live" || mode === "replay") syncActivation(); });
+setInterval(() => { if (!document.hidden && mode === "live") syncActivation(); }, 30e3);
 async function fetchSlots() {
   try {
     const r = await fetch(SLOT_API, { cache: "no-store", credentials: "same-origin" });
@@ -238,6 +260,7 @@ if (USE_SLOTS) {   // 切回来、或开着的时候每 30 秒跟服务器对一
 // App 里的 relay.js 读到工位 / 名单变了会发这两个事件，马上跟上
 window.addEventListener("liveboard:slots", () => syncSlots());
 window.addEventListener("liveboard:roster", () => loadRoster().then(() => { if (scene) render(); }));
+document.addEventListener("visibilitychange", () => { if (!document.hidden && mode === "live") syncActivation(); });
 
 let scene = null;
 createScene($("#stage"), ROSTER, { onPick: (n, o) => showPop(n, o), slots: slots.slice(), labelOf: (n) => short(n) })
@@ -245,7 +268,7 @@ createScene($("#stage"), ROSTER, { onPick: (n, o) => showPop(n, o), slots: slots
   .catch((err) => { $("#loading").textContent = t("loadFail", { msg: err.message }); });
 
 function render() {
-  const states = deriveStates(shown, vnow);
+  const states = deriveStates(ROSTER, shown, vnow, activationRec.disabled, { linkDown });
   scene?.setStates(states);
   const c = { on: 0, idle: 0, off: 0 };
   for (const s of Object.values(states)) c[s.group]++;
@@ -345,9 +368,12 @@ function renderMembers(states) {
   $("#mlist").innerHTML = list.map(({ b, s }) => {
     const r = s.ref;
     const note = !r ? "" : s.incoming ? t(r.type === "退回" ? "note.back" : "note.in", { who: short(r.bot), msg: r.message }) : r.message;
+    const off = s.st === "disabled";
+    const act = off ? t("act.restore") : t("act.hide");
+    const aria = off ? t("act.restoreLabel", { name: esc(b.short) }) : t("act.hideLabel", { name: esc(b.short) });
     return `<li data-bot="${esc(b.name)}" data-g="${s.group}" data-st="${s.st}" class="${focus === b.name ? "sel" : ""}">
       <i style="${LAMP[s.st] && s.group === "on" ? `--c:${LAMP[s.st]}` : ""}"></i><b>${esc(b.short)}</b><em>${WORD[s.st]}</em>
-      <time>${r ? fmtHM.format(r._t) : ""}</time>${note ? `<p>${esc(note)}</p>` : ""}</li>`;
+      <time>${r ? fmtHM.format(r._t) : ""}</time><button type="button" class="activation-toggle" data-activate="${esc(b.name)}" aria-label="${aria}">${act}</button>${note ? `<p>${esc(note)}</p>` : ""}</li>`;
   }).join("");
 }
 function openMember(n) {
@@ -389,7 +415,11 @@ function renderLog() {
 function animate(e) { if (e.to && (e.type === "交接" || e.type === "退回")) scene?.handoff(e.bot, e.to, e.type); }
 
 $("#proj").onchange = (e) => { project = e.target.value; pinned = true; render(); };
-$("#mlist").onclick = (e) => { const li = e.target.closest("li"); if (li) openMember(li.dataset.bot === focus ? null : li.dataset.bot); };
+$("#mlist").onclick = (e) => {
+  const b = e.target.closest("[data-activate]"); if (b) { e.stopPropagation(); toggleActivation(b.dataset.activate); return; }
+  const li = e.target.closest("li"); if (li) openMember(li.dataset.bot === focus ? null : li.dataset.bot);
+};
+$("#restore-all").onclick = (e) => { e.stopPropagation(); saveActivation([]); };
 
 // ---------- 模式 ----------
 let es = null, timer = null, raf = null, playing = true;
@@ -398,23 +428,42 @@ function setConn(k, t) { const c = $("#conn"); c.dataset.k = k; c.querySelector(
 function stopAll() { es?.close(); es = null; clearInterval(timer); timer = null; cancelAnimationFrame(raf); scene?.clearFlights(); }
 
 function liveLabel() { setConn("ok", t("conn.live", { time: fmtHM.format(Date.now()) })); }
-async function startLive() {
-  setConn("wait", t("conn.wait"));
-  await loadRoster(); await syncSlots(); if (mode !== "live") return;
-  es?.close();
+function noteHeartbeat() {
+  lastOk = Date.now();
+  const was = linkDown; linkDown = false;
+  if (was || Date.now() - (noteHeartbeat.shown || 0) > 15e3) { liveLabel(); noteHeartbeat.shown = Date.now(); }
+  if (was) render();
+}
+function openStream() {
+  es?.close(); lastOk = Date.now();
   es = new EventSource("/api/stream");
-  es.onerror = () => setConn("bad", t("conn.bad"));
-  es.addEventListener("init", (m) => { all = JSON.parse(m.data).filter((e) => !e.test).map(prep).sort(sortT); shown = all.slice(); vnow = Date.now(); applyDefaults(); liveLabel(); render(); });
+  es.onerror = () => { if (mode === "live") setConn("bad", t("conn.bad")); };
+  es.addEventListener("ping", () => { if (mode === "live") noteHeartbeat(); });
+  es.addEventListener("init", (m) => { all = JSON.parse(m.data).filter((e) => !e.test).map(prep).sort(sortT); shown = all.slice(); vnow = Date.now(); applyDefaults(); noteHeartbeat(); render(); });
   es.addEventListener("ev", (m) => {
     const e = prep(JSON.parse(m.data)); if (e.test || all.some((x) => x.id === e.id)) return;
-    all.push(e); all.sort(sortT); shown = all.slice(); vnow = Date.now(); liveLabel(); animate(e); render();
+    all.push(e); all.sort(sortT); shown = all.slice(); vnow = Date.now(); noteHeartbeat(); animate(e); render();
   });
-  timer = setInterval(() => { vnow = Date.now(); }, 30e3);
+}
+async function startLive() {
+  setConn("wait", t("conn.wait"));
+  await loadRoster(); await Promise.all([syncSlots(), syncActivation()]); if (mode !== "live") return;
+  openStream();
+  // 每 30 秒按现在的时间重算（进行中超过 2 小时变空闲等）。75 秒没有心跳也没有新事件：未人工停用的人显示离线，并重连。
+  timer = setInterval(() => {
+    if (mode !== "live") return;
+    vnow = Date.now();
+    if (!es || es.readyState === 2 || Date.now() - lastOk > 75e3) {
+      linkDown = true; setConn("bad", t("conn.bad")); openStream();
+    }
+    render();
+  }, 30e3);
 }
 
 async function startReplay() {
   setConn("off", t("conn.replay"));
-  await loadRoster(); await syncSlots();
+  linkDown = false;
+  await loadRoster(); await Promise.all([syncSlots(), syncActivation()]);
   try { all = (await (await fetch("/api/events")).json()).filter((e) => !e.test).map(prep).sort(sortT); } catch { all = []; }
   applyDefaults();
   const days = [...new Set(all.map((e) => dayOf(e._t)))].sort().reverse();

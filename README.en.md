@@ -90,7 +90,10 @@ Messages that look like secrets (prefixes such as `ntn_` or `secret_`, private-k
 
 ## What you can do on the board
 
-- Six desks: by default the members with the most recent activity. Click someone at a desk to swap in a member from the **Bench**; the swap is stored by the writer, so every Mac shows the same thing.
+- Six desks: by default the six members with the most recent activity, then remembered. Click someone at a desk to swap in a member from the **Bench**; the swap is stored by the writer, so every Mac shows the same thing. Auto-refresh stays about every 3 seconds while open and every 30 seconds while tucked away.
+- Everyone on the roster **starts activated**. A member with no check-ins yet is shown as idle, not as "not started".
+- Under **More → Members**, each person has **Hide / Restore**, and there is **Restore all**. The choice is saved immediately. Refresh and sync will not overwrite it. If the connection drops or the heartbeat stops, members who were not hidden by hand show as offline; the next heartbeat or check-in brings them back to whatever the record says. Someone you hid stays hidden.
+- Hiding and restoring **only change the board**. They do not start, wake, or assign work to anyone.
 - Top: how many members are Working / Idle / Need you, and which step the current task has reached.
 - **Recent activity**: check-ins, newest first. **More** lets you replay any day.
 - Right-click menu: Refresh, Set Up Again…, Open at Login (on by default), Language, About, Quit.
